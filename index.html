@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Plushlands: Open World + PNG Grass</title>
+<title>Plushlands: Triplanar + Slope Blend + Flowers</title>
 
 <!-- Import map so bare specifiers like "three" resolve -->
 <script type="importmap">
@@ -70,7 +70,7 @@
   <div id="crosshair"></div>
   <div id="help">
     <h1>Click to enter the world :3</h1>
-    <p>Explore the rolling terrain, gather sticks/rocks/berries, and build a cozy campfire.</p>
+    <p>Now with triplanar terrain, slope-based dirt/rock, and flowers 🌸</p>
     <div id="lockBtn">Start</div>
     <p style="opacity:.8;margin-top:10px">Tip: open inventory with <b>I</b></p>
   </div>
@@ -87,14 +87,14 @@
     </div>
   </div>
 
-  <div id="notice">v0.2 — PNG grass with world-space UVs 🌿</div>
+  <div id="notice">v0.3 — Triplanar + Slope Blend + Flowers</div>
 </div>
 
 <script type="module">
 import * as THREE from 'three';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 
-/*** ---------- Quick helpers ---------- ***/
+/*** ---------- Helpers ---------- ***/
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const lerp = (a,b,t) => a + (b-a)*t;
 const smoothstep = (t)=>t*t*(3-2*t);
@@ -105,10 +105,10 @@ function hash(ix, iz, seed=1337){
   let x = Math.imul(ix ^ seed, 374761393) ^ Math.imul(iz + 0x9e3779b9, 668265263);
   x = (x ^ (x >>> 13)) >>> 0;
   x = Math.imul(x, 1274126177) >>> 0;
-  return (x >>> 8) / 16777216; // 24-bit fraction
+  return (x >>> 8) / 16777216;
 }
 
-// 2D Value noise w/ bilinear interpolation at grid scale S
+// 2D Value noise
 function valueNoise2D(x, z, S=64, seed=1337){
   const gx = Math.floor(x / S), gz = Math.floor(z / S);
   const fx = (x / S) - gx, fz = (z / S) - gz;
@@ -119,10 +119,10 @@ function valueNoise2D(x, z, S=64, seed=1337){
   const v11 = hash(gx+1, gz+1, seed);
   const a = lerp(v00, v10, u);
   const b = lerp(v01, v11, u);
-  return lerp(a, b, v)*2 - 1; // [-1,1]
+  return lerp(a, b, v)*2 - 1;
 }
 
-// fBm: layered noise
+// fBm
 function fbm2D(x, z, oct=5, baseScale=180, seed=1337){
   let amp=1, freq=1, sum=0, norm=0;
   for(let i=0;i<oct;i++){
@@ -131,26 +131,28 @@ function fbm2D(x, z, oct=5, baseScale=180, seed=1337){
     amp *= 0.5;
     freq *= 2.0;
   }
-  return sum / norm; // ~[-1,1]
+  return sum / norm;
 }
 
 /*** ---------- World config ---------- ***/
-const CHUNK_SIZE = 160;       // meters
-const CHUNK_RES  = 60;        // verts per side
-const VIEW_RADIUS = 3;        // chunks in each dir (creates (2R+1)^2 chunks)
-const PLAYER_HEIGHT = 1.7;    // camera eye height
+const CHUNK_SIZE = 160;
+const CHUNK_RES  = 60;
+const VIEW_RADIUS = 3;
+const PLAYER_HEIGHT = 1.7;
 const GRAVITY = 28;
 const MOVE_ACCEL = 65;
 const MOVE_DAMP = 10;
 const JUMP_VEL = 9.6;
 
-const TERRAIN_AMPLITUDE = 22; // meters peak-to-peak
+const TERRAIN_AMPLITUDE = 22;
 const SEA_LEVEL = 0.0;
 
-const ITEM_PER_CHUNK = 14;    // average pickups per chunk
+const ITEM_PER_CHUNK = 14;
 const PICKUP_DISTANCE = 2.0;
 
-const DAY_MINUTES = 4;        // 1 day length (real minutes)
+const DAY_MINUTES = 4;
+
+const FLOWERS_PER_CHUNK = 70;
 
 /*** ---------- Three.js setup ---------- ***/
 const scene = new THREE.Scene();
@@ -167,34 +169,11 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 document.body.appendChild(renderer.domElement);
 
-/*** ---------- PNG Grass texture + shared terrain material ---------- ***/
-// Change this path to where your image lives:
-const GRASS_PATH = 'assets/grass.png';
-const TILE_METERS = 4; // 1 texture tile per 4 world meters
-
-const texLoader = new THREE.TextureLoader();
-const grassTex = texLoader.load(GRASS_PATH, ()=>{ grassTex.needsUpdate = true; });
-grassTex.wrapS = grassTex.wrapT = THREE.RepeatWrapping; // allow UVs outside [0,1]
-grassTex.colorSpace = THREE.SRGBColorSpace;
-const maxAniso = renderer.capabilities.getMaxAnisotropy ? renderer.capabilities.getMaxAnisotropy() : 1;
-if (typeof maxAniso === 'number') grassTex.anisotropy = maxAniso;
-
-const terrainMat = new THREE.MeshStandardMaterial({
-  vertexColors:true, flatShading:true, metalness:0.0, roughness:0.95, map: grassTex
-});
-
-// (Optional) normal map — drop in a file and uncomment:
-// const grassN = texLoader.load('assets/grass_n.png');
-// grassN.wrapS = grassN.wrapT = THREE.RepeatWrapping;
-// terrainMat.normalMap = grassN;
-// terrainMat.normalScale.set(0.6, 0.6);
-
 const controls = new PointerLockControls(camera, renderer.domElement);
 
 /*** ---------- Lights & sky ---------- ***/
 const sun = new THREE.DirectionalLight(0xffffff, 1.0);
 sun.position.set(100,200,80);
-sun.castShadow = false;
 scene.add(sun);
 
 const ambient = new THREE.AmbientLight(0xffffff, 0.35);
@@ -211,7 +190,7 @@ water.position.y = SEA_LEVEL - 0.15;
 scene.add(water);
 
 /*** ---------- Terrain generation ---------- ***/
-// Height function (meters)
+// Height function
 function heightAt(x, z){
   const h = fbm2D(x, z, 5, 220, 2025) * TERRAIN_AMPLITUDE
           + fbm2D(x+5000, z-8000, 3, 60, 9001) * 5;
@@ -219,7 +198,7 @@ function heightAt(x, z){
   return h + ridge*8 - 2;
 }
 
-// Biome tint color (multiplies with grass texture)
+// Biome tint color (multiplies final albedo)
 function colorFor(x, y, z){
   const b = fbm2D(x+25000, z-25000, 4, 300, 4040)*0.5 + 0.5; // [0,1]
   let col = new THREE.Color();
@@ -230,18 +209,138 @@ function colorFor(x, y, z){
   } else if (b < 0.66){
     col.setRGB(0.32, 0.56, 0.26);  // grassy
   } else {
-    col.setRGB(0.42, 0.62, 0.42);  // alpine scrub
+    col.setRGB(0.42, 0.62, 0.42);  // alpine
   }
+  // snow tint by elevation
   const snow = smoothstep((y - 14) / 10);
   col.lerp(new THREE.Color(0.95,0.97,1.0), clamp(snow,0,1));
   return col;
 }
 
-const chunkMap = new Map();  // key -> mesh
-const itemsMap = new Map();  // key -> pickup array
+/*** ---------- Textures (grass + procedural dirt/rock) ---------- ***/
+const TEX_METERS = 4; // 1 tile per 4 meters
+const GRASS_PATH = 'assets/grass.png'; // <- your seamless PNG
+const DIRT_PATH  = null;               // e.g. 'assets/dirt.png' or keep null
+const ROCK_PATH  = null;               // e.g. 'assets/rock.png' or keep null
+
+const loader = new THREE.TextureLoader();
+
+function makeDirtTexture(size=256){
+  const c = document.createElement('canvas'); c.width=c.height=size;
+  const g = c.getContext('2d');
+  g.fillStyle = '#6e553b'; g.fillRect(0,0,size,size);
+  for(let i=0;i<2000;i++){
+    const x=Math.random()*size, y=Math.random()*size, r=Math.random()*1.6+0.2;
+    g.fillStyle = Math.random()<0.5?'rgba(70,50,30,0.25)':'rgba(160,130,100,0.18)';
+    g.beginPath(); g.arc(x,y,r,0,6.283); g.fill();
+  }
+  const tex = new THREE.CanvasTexture(c); tex.wrapS=tex.wrapT=THREE.RepeatWrapping; tex.colorSpace=THREE.SRGBColorSpace; return tex;
+}
+function makeRockTexture(size=256){
+  const c = document.createElement('canvas'); c.width=c.height=size;
+  const g = c.getContext('2d');
+  g.fillStyle = '#808993'; g.fillRect(0,0,size,size);
+  for(let i=0;i<1400;i++){
+    const x=Math.random()*size, y=Math.random()*size;
+    const w=Math.random()*3+0.5, h=Math.random()*1.5+0.3;
+    g.fillStyle = Math.random()<0.5?'rgba(60,66,72,0.28)':'rgba(220,230,240,0.14)';
+    g.beginPath(); g.ellipse(x,y,w,h,Math.random()*Math.PI,0,6.283); g.fill();
+  }
+  const tex = new THREE.CanvasTexture(c); tex.wrapS=tex.wrapT=THREE.RepeatWrapping; tex.colorSpace=THREE.SRGBColorSpace; return tex;
+}
+
+function loadTexOr(makeFn, path){
+  if (!path) return makeFn();
+  const t = loader.load(path, ()=>{ t.needsUpdate=true; });
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+const grassTex = loader.load(GRASS_PATH, ()=>{ grassTex.needsUpdate = true; });
+grassTex.wrapS = grassTex.wrapT = THREE.RepeatWrapping;
+grassTex.colorSpace = THREE.SRGBColorSpace;
+
+const dirtTex = loadTexOr(makeDirtTexture, DIRT_PATH);
+const rockTex = loadTexOr(makeRockTexture, ROCK_PATH);
+
+const maxAniso = renderer.capabilities.getMaxAnisotropy ? renderer.capabilities.getMaxAnisotropy() : 1;
+[grassTex, dirtTex, rockTex].forEach(t=> t.anisotropy = maxAniso);
+
+/*** ---------- Terrain material with triplanar + slope blend ---------- ***/
+const terrainMat = new THREE.MeshStandardMaterial({
+  vertexColors:true, flatShading:true, metalness:0.0, roughness:0.95, map: grassTex // map set so <map_fragment> exists
+});
+
+terrainMat.onBeforeCompile = (shader)=>{
+  shader.uniforms.grassMap   = { value: grassTex };
+  shader.uniforms.dirtMap    = { value: dirtTex };
+  shader.uniforms.rockMap    = { value: rockTex };
+  shader.uniforms.tileScale  = { value: 1.0 / TEX_METERS }; // meters -> UV
+  shader.uniforms.slopeStart = { value: 0.35 }; // start blending dirt
+  shader.uniforms.slopeEnd   = { value: 0.8  }; // rock above this
+  shader.uniforms.triSharp   = { value: 4.0  }; // triplanar sharpness
+
+  shader.vertexShader = shader.vertexShader
+    .replace('#include <common>', `
+      #include <common>
+      varying vec3 vWorldPos;
+      varying vec3 vWorldNormal;
+    `)
+    .replace('#include <beginnormal_vertex>', `
+      #include <beginnormal_vertex>
+      vWorldNormal = normalize( mat3( modelMatrix ) * objectNormal );
+    `)
+    .replace('#include <begin_vertex>', `
+      #include <begin_vertex>
+      vWorldPos = (modelMatrix * vec4( transformed, 1.0 )).xyz;
+    `);
+
+  shader.fragmentShader = shader.fragmentShader
+    .replace('#include <map_fragment>', `
+      // --- Triplanar diffuse with slope-based material weights ---
+      vec3 n = normalize( vWorldNormal );
+      vec3 an = pow( abs(n), vec3(triSharp) );
+      an /= (an.x + an.y + an.z + 1e-5);
+
+      vec2 coordX = vWorldPos.zy * tileScale;
+      vec2 coordY = vWorldPos.xz * tileScale;
+      vec2 coordZ = vWorldPos.xy * tileScale;
+
+      vec4 gx = mapTexelToLinear( texture2D( grassMap, coordX ) );
+      vec4 gy = mapTexelToLinear( texture2D( grassMap, coordY ) );
+      vec4 gz = mapTexelToLinear( texture2D( grassMap, coordZ ) );
+      vec3 grass = gx.rgb * an.x + gy.rgb * an.y + gz.rgb * an.z;
+
+      vec4 dx = mapTexelToLinear( texture2D( dirtMap, coordX ) );
+      vec4 dy = mapTexelToLinear( texture2D( dirtMap, coordY ) );
+      vec4 dz = mapTexelToLinear( texture2D( dirtMap, coordZ ) );
+      vec3 dirt  = dx.rgb * an.x + dy.rgb * an.y + dz.rgb * an.z;
+
+      vec4 rx = mapTexelToLinear( texture2D( rockMap, coordX ) );
+      vec4 ry = mapTexelToLinear( texture2D( rockMap, coordY ) );
+      vec4 rz = mapTexelToLinear( texture2D( rockMap, coordZ ) );
+      vec3 rock  = rx.rgb * an.x + ry.rgb * an.y + rz.rgb * an.z;
+
+      float slope = clamp(1.0 - abs(n.y), 0.0, 1.0); // 0 flat, 1 vertical
+      float g = 1.0 - smoothstep(slopeStart*0.8, slopeStart, slope);
+      float d = smoothstep(slopeStart*0.6, slopeEnd*0.9, slope) * (1.0 - smoothstep(slopeEnd*0.9, slopeEnd, slope));
+      float r = smoothstep(slopeEnd*0.9, slopeEnd, slope);
+
+      vec3 w = normalize(vec3(max(g,0.0), max(d,0.0), max(r,0.0)) + vec3(1e-5));
+      vec3 baseTex = grass*w.x + dirt*w.y + rock*w.z;
+
+      diffuseColor.rgb = baseTex * vColor.rgb; // keep biome/snow vertex tint
+    `);
+};
+
+/*** ---------- Chunk streaming + pickups + flowers ---------- ***/
+const chunkMap = new Map();   // key -> mesh
+const itemsMap = new Map();   // key -> pickups array
+const decoMap  = new Map();   // key -> [instanced meshes]
+
 function keyFor(cx, cz){ return `${cx},${cz}`; }
 
-// Build one chunk mesh with vertex colors + world-space UVs (seamless tiling)
 function buildChunk(cx, cz){
   const x0 = cx * CHUNK_SIZE;
   const z0 = cz * CHUNK_SIZE;
@@ -259,30 +358,22 @@ function buildChunk(cx, cz){
     pos.setY(i, y);
 
     const col = colorFor(vx, y, vz);
-    colors[i*3+0] = col.r;
-    colors[i*3+1] = col.g;
-    colors[i*3+2] = col.b;
+    colors[i*3+0] = col.r; colors[i*3+1] = col.g; colors[i*3+2] = col.b;
   }
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-
-  // 🔑 World-space UVs so the grass PNG repeats by meters, not per-chunk
-  const uv = geo.attributes.uv;
-  for (let i = 0; i < uv.count; i++) {
-    const vx = pos.getX(i) + x0;
-    const vz = pos.getZ(i) + z0;
-    uv.setXY(i, vx / TILE_METERS, vz / TILE_METERS);
-  }
-  uv.needsUpdate = true;
-
   geo.computeVertexNormals();
 
   const mesh = new THREE.Mesh(geo, terrainMat);
   mesh.frustumCulled = true;
   scene.add(mesh);
 
-  // Place pickups in this chunk
+  // Pickups
   const items = spawnItemsInChunk(x0, z0);
   itemsMap.set(keyFor(cx,cz), items);
+
+  // Flowers
+  const flowers = scatterFlowersInChunk(x0, z0);
+  decoMap.set(keyFor(cx,cz), flowers);
 
   return mesh;
 }
@@ -292,7 +383,7 @@ function removeChunk(cx, cz){
   const m = chunkMap.get(k);
   if (m){
     scene.remove(m);
-    m.geometry.dispose(); m.material = null;
+    m.geometry.dispose();
     chunkMap.delete(k);
   }
   const items = itemsMap.get(k);
@@ -303,6 +394,15 @@ function removeChunk(cx, cz){
       if (it.mesh.material) it.mesh.material.dispose();
     }
     itemsMap.delete(k);
+  }
+  const decos = decoMap.get(k);
+  if (decos){
+    for (const d of decos){
+      scene.remove(d);
+      d.geometry.dispose();
+      d.material.dispose();
+    }
+    decoMap.delete(k);
   }
 }
 
@@ -354,12 +454,14 @@ function makePickupMesh(type){
   if (type === 'rock'){
     const g = new THREE.IcosahedronGeometry(0.3, 0);
     const m = new THREE.MeshStandardMaterial({ color:0x888888, roughness:1.0, metalness:0.0 });
-    const mesh = new THREE.Mesh(g,m); mesh.castShadow=false; mesh.receiveShadow=true; return mesh;
+    return new THREE.Mesh(g,m);
   }
   if (type === 'stick'){
     const g = new THREE.CylinderGeometry(0.06, 0.06, 0.9, 6);
     const m = new THREE.MeshStandardMaterial({ color:0x6b4e2e, roughness:0.9 });
-    const mesh = new THREE.Mesh(g,m); mesh.rotation.z = (Math.random()*0.6-0.3); mesh.rotation.y = Math.random()*Math.PI; return mesh;
+    const mesh = new THREE.Mesh(g,m);
+    mesh.rotation.z = (Math.random()*0.6-0.3); mesh.rotation.y = Math.random()*Math.PI;
+    return mesh;
   }
   // berry bush
   const group = new THREE.Group();
@@ -383,7 +485,6 @@ function spawnItemsInChunk(x0, z0){
     const [x,z] = randInChunk(x0, z0);
     const y = heightAt(x,z);
     if (y < SEA_LEVEL + 0.2) continue;
-
     const mesh = makePickupMesh(type);
     mesh.position.set(x, y + (type==='berry'?0.02:0.05), z);
     scene.add(mesh);
@@ -392,27 +493,67 @@ function spawnItemsInChunk(x0, z0){
   return arr;
 }
 
-function nearestPickup(px, py, pz){
-  let best=null, bestD=1e9;
-  for (const items of itemsMap.values()){
-    for (const it of items){
-      if (it.taken) continue;
-      const dx = it.x - px, dy = (it.y+0.3) - py, dz = it.z - pz;
-      const d2 = dx*dx + dy*dy + dz*dz;
-      if (d2 < bestD){
-        bestD = d2; best = it;
-      }
+/*** ---------- Flowers (instanced) ---------- ***/
+function approxSlope(x, z){
+  const e = 0.6;
+  const hL = heightAt(x-e, z), hR = heightAt(x+e, z);
+  const hD = heightAt(x, z-e), hU = heightAt(x, z+e);
+  const nx = hL - hR, nz = hD - hU, ny = 2*e;
+  const len = Math.sqrt(nx*nx + ny*ny + nz*nz);
+  const nyN = ny/len;
+  return 1 - Math.abs(nyN); // ~0 flat .. 1 steep
+}
+function scatterFlowersInChunk(x0, z0){
+  const count = Math.floor(FLOWERS_PER_CHUNK * (Math.random()*0.6+0.7));
+
+  const stemGeo  = new THREE.CylinderGeometry(0.02, 0.02, 0.25, 6);
+  const stemMat1 = new THREE.MeshStandardMaterial({ color:0x2e7d32, roughness:0.9 });
+  const bloomGeo = new THREE.IcosahedronGeometry(0.06, 0);
+  const bloomMatPink = new THREE.MeshStandardMaterial({ color:0xffb1d6, roughness:0.7 });
+  const bloomMatWhite= new THREE.MeshStandardMaterial({ color:0xffffff, roughness:0.7 });
+
+  const stems = new THREE.InstancedMesh(stemGeo, stemMat1, count);
+  const bloomsPink  = new THREE.InstancedMesh(bloomGeo, bloomMatPink, Math.floor(count*0.6));
+  const bloomsWhite = new THREE.InstancedMesh(bloomGeo, bloomMatWhite, count - bloomsPink.count);
+
+  const m = new THREE.Matrix4();
+  let i=0, ip=0, iw=0, tries=0;
+  while (i < count && tries < count*6){
+    tries++;
+    const [x,z] = randInChunk(x0, z0);
+    const y = heightAt(x,z);
+    if (y < SEA_LEVEL+0.2) continue;
+    if (y > 18.0) continue;              // avoid snowy tops
+    if (approxSlope(x,z) > 0.25) continue; // gentle ground only
+
+    // place stem
+    m.identity().setPosition(x, y+0.125, z);
+    stems.setMatrixAt(i, m);
+
+    // bloom (random color)
+    m.identity().setPosition(x, y+0.25, z);
+    if (Math.random()<0.6 && ip < bloomsPink.count){
+      bloomsPink.setMatrixAt(ip++, m);
+    } else if (iw < bloomsWhite.count){
+      bloomsWhite.setMatrixAt(iw++, m);
+    } else if (ip < bloomsPink.count){
+      bloomsPink.setMatrixAt(ip++, m);
+    } else {
+      bloomsWhite.setMatrixAt(iw++, m);
     }
+    i++;
   }
-  return best ? { item:best, dist: Math.sqrt(bestD) } : null;
+  stems.instanceMatrix.needsUpdate = true;
+  bloomsPink.instanceMatrix.needsUpdate = true;
+  bloomsWhite.instanceMatrix.needsUpdate = true;
+
+  scene.add(stems, bloomsPink, bloomsWhite);
+  return [stems, bloomsPink, bloomsWhite];
 }
 
-/*** ---------- Player movement ---------- ***/
+/*** ---------- Player movement & systems ---------- ***/
 const keys = new Set();
-addEventListener('keydown', e=>{
-  if (e.code === 'Space') e.preventDefault();
-  keys.add(e.code);
-});
+addEventListener('keydown', e=>{ if (e.code === 'Space') e.preventDefault(); keys.add(e.code); });
 addEventListener('keyup', e=>keys.delete(e.code));
 
 const vel = new THREE.Vector3(0,0,0);
@@ -428,8 +569,7 @@ rain.visible = false;
 scene.add(rain);
 let raining = false;
 function toggleRain(on){
-  raining = on;
-  rain.visible = on;
+  raining = on; rain.visible = on;
   if (on){
     const arr = rainGeo.attributes.position.array;
     for (let i=0;i<MAX_RAIN;i++){
@@ -453,7 +593,7 @@ function updateWeather(dt){
 function buildCampfireAt(x,z){
   const g = new THREE.CylinderGeometry(0.18, 0.18, 0.5, 6);
   const m = new THREE.MeshStandardMaterial({ color:0x5a3d27, roughness:0.95 });
-  const log1 = new THREE.Mesh(g,m); const log2 = log1.clone(); const log3 = log1.clone();
+  const log1 = new THREE.Mesh(g,m), log2 = log1.clone(), log3 = log1.clone();
   const y = heightAt(x,z) + 0.25;
   log1.position.set(x,y,z); log2.position.set(x,y,z); log3.position.set(x,y,z);
   log1.rotation.z = 0.4; log2.rotation.z = -0.4; log3.rotation.x = 0.6;
@@ -461,16 +601,13 @@ function buildCampfireAt(x,z){
 
   const flame = new THREE.Mesh(new THREE.SphereGeometry(0.22, 16, 12),
     new THREE.MeshBasicMaterial({ color:0xffb74d }));
-  flame.position.set(x, y+0.1, z);
-  scene.add(flame);
+  flame.position.set(x, y+0.1, z); scene.add(flame);
 
   const glow = new THREE.PointLight(0xffa040, 1.6, 15, 1.5);
-  glow.position.set(x, y+0.3, z);
-  scene.add(glow);
+  glow.position.set(x, y+0.3, z); scene.add(glow);
 
   const baseI = glow.intensity;
-  const baseC = new THREE.Color(0xffa040);
-  campfires.push({ glow, flame, t: Math.random()*100, baseI, baseC });
+  campfires.push({ glow, flame, t: Math.random()*100, baseI });
 }
 const campfires = [];
 function updateCampfires(dt){
@@ -482,7 +619,7 @@ function updateCampfires(dt){
   }
 }
 
-/*** ---------- UI elements ---------- ***/
+/*** ---------- UI ---------- ***/
 const help = document.getElementById('help');
 const lockBtn = document.getElementById('lockBtn');
 lockBtn.onclick = ()=>controls.lock();
@@ -501,21 +638,20 @@ addEventListener('keydown', (e)=>{
 const interact = document.getElementById('interact');
 function showInteract(msg){ interact.textContent = msg; interact.style.opacity = 1; }
 function hideInteract(){ interact.style.opacity = 0; }
-
 const statusEl = document.getElementById('status');
 
 /*** ---------- Game loop ---------- ***/
 const clock = new THREE.Clock();
 let chunkCheckTimer = 0;
 
-let timeOfDay = 8.0; // hours, start morning
+// Day cycle
+let timeOfDay = 8.0;
 function updateDayNight(dt){
-  const minutesPerSec = (24 / (DAY_MINUTES*60)); // day per second
+  const minutesPerSec = (24 / (DAY_MINUTES*60));
   timeOfDay = (timeOfDay + dt * minutesPerSec * 60) % 24;
 
   const t = (timeOfDay / 24) * Math.PI*2;
-  const elev = Math.sin(t);
-  const azim = Math.cos(t);
+  const elev = Math.sin(t), azim = Math.cos(t);
   sun.position.set(azim*200, Math.max(10, elev*220 + 120), elev*120);
   sun.intensity = clamp(0.1 + Math.max(0, elev)*0.9, 0.1, 1.2);
   ambient.intensity = 0.20 + Math.max(0, elev)*0.25;
@@ -525,24 +661,19 @@ function updateDayNight(dt){
   const nightCol = new THREE.Color(0x0b1020);
   let sky = dayCol.clone();
   if (elev < 0.1){
-    const k = clamp((0.1 - elev)/0.6, 0, 1);
-    sky.lerp(nightCol, k);
+    const k = clamp((0.1 - elev)/0.6, 0, 1); sky.lerp(nightCol, k);
   } else if (elev < 0.3){
-    const k = clamp((0.3 - elev)/0.2, 0, 1);
-    sky.lerp(duskCol, k);
+    const k = clamp((0.3 - elev)/0.2, 0, 1); sky.lerp(duskCol, k);
   }
   if (raining) sky.lerp(new THREE.Color(0x6a8bb3), 0.35);
-  scene.background.copy(sky);
-  scene.fog.color.copy(sky);
+  scene.background.copy(sky); scene.fog.color.copy(sky);
 }
 
+// Movement & collision
 function updatePlayer(dt){
   if (!controls.isLocked) return;
-
-  const forward = new THREE.Vector3();
-  const right = new THREE.Vector3();
-  camera.getWorldDirection(forward);
-  forward.y = 0; forward.normalize();
+  const forward = new THREE.Vector3(), right = new THREE.Vector3();
+  camera.getWorldDirection(forward); forward.y = 0; forward.normalize();
   right.crossVectors(forward, new THREE.Vector3(0,1,0)).multiplyScalar(-1).normalize();
 
   const acc = new THREE.Vector3();
@@ -552,41 +683,27 @@ function updatePlayer(dt){
   if (keys.has('KeyD')) acc.add(right);
   if (acc.lengthSq()>0) acc.normalize().multiplyScalar(MOVE_ACCEL);
 
-  vel.x += acc.x * dt;
-  vel.z += acc.z * dt;
-
-  vel.x -= vel.x * MOVE_DAMP * dt;
-  vel.z -= vel.z * MOVE_DAMP * dt;
-
+  vel.x += acc.x * dt; vel.z += acc.z * dt;
+  vel.x -= vel.x * MOVE_DAMP * dt; vel.z -= vel.z * MOVE_DAMP * dt;
   vel.y -= GRAVITY * dt;
 
-  if (keys.has('Space') && canJump){
-    vel.y = JUMP_VEL; canJump = false;
-  }
+  if (keys.has('Space') && canJump){ vel.y = JUMP_VEL; canJump = false; }
 
   const pos = camera.position;
-  pos.x += vel.x * dt;
-  pos.z += vel.z * dt;
-  pos.y += vel.y * dt;
+  pos.x += vel.x * dt; pos.z += vel.z * dt; pos.y += vel.y * dt;
 
   const groundY = heightAt(pos.x, pos.z) + PLAYER_HEIGHT;
-  if (pos.y < groundY){
-    pos.y = groundY;
-    vel.y = 0;
-    canJump = true;
-  }
+  if (pos.y < groundY){ pos.y = groundY; vel.y = 0; canJump = true; }
 }
 
-// Handle pickups & building
+// Pickups + building
 let pickupCooldown = 0;
 addEventListener('keydown', (e)=>{
   if (!controls.isLocked) return;
-  if (e.code === 'KeyE'){
-    tryPickup();
-  } else if (e.code === 'KeyB'){
+  if (e.code === 'KeyE'){ tryPickup(); }
+  else if (e.code === 'KeyB'){
     if (inventory.stick >= 3 && inventory.rock >= 1){
-      inventory.stick -= 3; inventory.rock -= 1;
-      updateInventoryUI();
+      inventory.stick -= 3; inventory.rock -= 1; updateInventoryUI();
       buildCampfireAt(camera.position.x, camera.position.z);
     }
   }
@@ -596,13 +713,23 @@ function tryPickup(){
   if (pickupCooldown > 0) return;
   const n = nearestPickup(camera.position.x, camera.position.y, camera.position.z);
   if (n && n.dist <= PICKUP_DISTANCE){
-    const it = n.item;
-    it.taken = true;
-    scene.remove(it.mesh);
-    inventory[it.type] = (inventory[it.type]||0) + 1;
-    updateInventoryUI();
+    const it = n.item; it.taken = true; scene.remove(it.mesh);
+    inventory[it.type] = (inventory[it.type]||0) + 1; updateInventoryUI();
     pickupCooldown = 0.2;
   }
+}
+
+function nearestPickup(px, py, pz){
+  let best=null, bestD=1e9;
+  for (const items of itemsMap.values()){
+    for (const it of items){
+      if (it.taken) continue;
+      const dx = it.x - px, dy = (it.y+0.3) - py, dz = it.z - pz;
+      const d2 = dx*dx + dy*dy + dz*dz;
+      if (d2 < bestD){ bestD = d2; best = it; }
+    }
+  }
+  return best ? { item:best, dist: Math.sqrt(bestD) } : null;
 }
 
 /*** ---------- Resize ---------- ***/
