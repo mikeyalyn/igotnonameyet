@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Plushlands: Triplanar + Slope Blend + Flowers</title>
+<title>Plushlands: Triplanar + Slope Blend + Flowers (Shader Fix)</title>
 
-<!-- Import map so bare specifiers like "three" resolve -->
+<!-- Import map for bare specifiers -->
 <script type="importmap">
 {
   "imports": {
@@ -70,7 +70,7 @@
   <div id="crosshair"></div>
   <div id="help">
     <h1>Click to enter the world :3</h1>
-    <p>Now with triplanar terrain, slope-based dirt/rock, and flowers 🌸</p>
+    <p>Triplanar terrain, slope-based dirt/rock, and flowers 🌸</p>
     <div id="lockBtn">Start</div>
     <p style="opacity:.8;margin-top:10px">Tip: open inventory with <b>I</b></p>
   </div>
@@ -87,7 +87,7 @@
     </div>
   </div>
 
-  <div id="notice">v0.3 — Triplanar + Slope Blend + Flowers</div>
+  <div id="notice">v0.3.1 — Shader compile fix ✅</div>
 </div>
 
 <script type="module">
@@ -198,9 +198,9 @@ function heightAt(x, z){
   return h + ridge*8 - 2;
 }
 
-// Biome tint color (multiplies final albedo)
+// Biome tint color (multiplies final albedo later)
 function colorFor(x, y, z){
-  const b = fbm2D(x+25000, z-25000, 4, 300, 4040)*0.5 + 0.5; // [0,1]
+  const b = fbm2D(x+25000, z-25000, 4, 300, 4040)*0.5 + 0.5;
   let col = new THREE.Color();
   if (y < SEA_LEVEL + 0.5){
     col.setRGB(0.05, 0.18, 0.28);
@@ -211,7 +211,6 @@ function colorFor(x, y, z){
   } else {
     col.setRGB(0.42, 0.62, 0.42);  // alpine
   }
-  // snow tint by elevation
   const snow = smoothstep((y - 14) / 10);
   col.lerp(new THREE.Color(0.95,0.97,1.0), clamp(snow,0,1));
   return col;
@@ -220,8 +219,8 @@ function colorFor(x, y, z){
 /*** ---------- Textures (grass + procedural dirt/rock) ---------- ***/
 const TEX_METERS = 4; // 1 tile per 4 meters
 const GRASS_PATH = 'assets/grass.png'; // <- your seamless PNG
-const DIRT_PATH  = null;               // e.g. 'assets/dirt.png' or keep null
-const ROCK_PATH  = null;               // e.g. 'assets/rock.png' or keep null
+const DIRT_PATH  = null;               // e.g. 'assets/dirt.png' or keep null for procedural
+const ROCK_PATH  = null;               // e.g. 'assets/rock.png' or keep null for procedural
 
 const loader = new THREE.TextureLoader();
 
@@ -267,20 +266,26 @@ const rockTex = loadTexOr(makeRockTexture, ROCK_PATH);
 const maxAniso = renderer.capabilities.getMaxAnisotropy ? renderer.capabilities.getMaxAnisotropy() : 1;
 [grassTex, dirtTex, rockTex].forEach(t=> t.anisotropy = maxAniso);
 
-/*** ---------- Terrain material with triplanar + slope blend ---------- ***/
+/*** ---------- Terrain material with triplanar + slope blend (FIXED) ---------- ***/
 const terrainMat = new THREE.MeshStandardMaterial({
-  vertexColors:true, flatShading:true, metalness:0.0, roughness:0.95, map: grassTex // map set so <map_fragment> exists
+  vertexColors:true,
+  flatShading:true,
+  metalness:0.0,
+  roughness:0.95,
+  map: grassTex // keep 'map' so <map_fragment> exists
 });
 
 terrainMat.onBeforeCompile = (shader)=>{
+  // uniforms
   shader.uniforms.grassMap   = { value: grassTex };
   shader.uniforms.dirtMap    = { value: dirtTex };
   shader.uniforms.rockMap    = { value: rockTex };
-  shader.uniforms.tileScale  = { value: 1.0 / TEX_METERS }; // meters -> UV
-  shader.uniforms.slopeStart = { value: 0.35 }; // start blending dirt
-  shader.uniforms.slopeEnd   = { value: 0.8  }; // rock above this
-  shader.uniforms.triSharp   = { value: 4.0  }; // triplanar sharpness
+  shader.uniforms.tileScale  = { value: 1.0 / TEX_METERS };
+  shader.uniforms.slopeStart = { value: 0.35 };
+  shader.uniforms.slopeEnd   = { value: 0.80 };
+  shader.uniforms.triSharp   = { value: 4.0 };
 
+  // varyings in VERTEX
   shader.vertexShader = shader.vertexShader
     .replace('#include <common>', `
       #include <common>
@@ -296,45 +301,54 @@ terrainMat.onBeforeCompile = (shader)=>{
       vWorldPos = (modelMatrix * vec4( transformed, 1.0 )).xyz;
     `);
 
+  // declare uniforms + varyings in FRAGMENT, replace map block
   shader.fragmentShader = shader.fragmentShader
+    .replace('#include <common>', `
+      #include <common>
+      varying vec3 vWorldPos;
+      varying vec3 vWorldNormal;
+      uniform sampler2D grassMap;
+      uniform sampler2D dirtMap;
+      uniform sampler2D rockMap;
+      uniform float tileScale;
+      uniform float slopeStart;
+      uniform float slopeEnd;
+      uniform float triSharp;
+
+      vec3 triSampleTex(sampler2D tex, vec3 axisWeights, vec3 worldPos){
+        vec2 uvX = worldPos.zy * tileScale; // project on YZ
+        vec2 uvY = worldPos.xz * tileScale; // project on XZ (top)
+        vec2 uvZ = worldPos.xy * tileScale; // project on XY
+        vec4 tx = mapTexelToLinear( texture2D(tex, uvX) );
+        vec4 ty = mapTexelToLinear( texture2D(tex, uvY) );
+        vec4 tz = mapTexelToLinear( texture2D(tex, uvZ) );
+        return tx.rgb * axisWeights.x + ty.rgb * axisWeights.y + tz.rgb * axisWeights.z;
+      }
+    `)
     .replace('#include <map_fragment>', `
-      // --- Triplanar diffuse with slope-based material weights ---
+      // --- Triplanar sampling with slope-based blending ---
       vec3 n = normalize( vWorldNormal );
-      vec3 an = pow( abs(n), vec3(triSharp) );
-      an /= (an.x + an.y + an.z + 1e-5);
+      vec3 aw = pow( abs(n), vec3(triSharp) );
+      aw /= (aw.x + aw.y + aw.z + 1e-5);
 
-      vec2 coordX = vWorldPos.zy * tileScale;
-      vec2 coordY = vWorldPos.xz * tileScale;
-      vec2 coordZ = vWorldPos.xy * tileScale;
+      vec3 grass = triSampleTex(grassMap, aw, vWorldPos);
+      vec3 dirt  = triSampleTex(dirtMap,  aw, vWorldPos);
+      vec3 rock  = triSampleTex(rockMap,  aw, vWorldPos);
 
-      vec4 gx = mapTexelToLinear( texture2D( grassMap, coordX ) );
-      vec4 gy = mapTexelToLinear( texture2D( grassMap, coordY ) );
-      vec4 gz = mapTexelToLinear( texture2D( grassMap, coordZ ) );
-      vec3 grass = gx.rgb * an.x + gy.rgb * an.y + gz.rgb * an.z;
+      float slope = clamp(1.0 - abs(n.y), 0.0, 1.0);
+      float wg = 1.0 - smoothstep(slopeStart*0.8, slopeStart, slope);
+      float wd = smoothstep(slopeStart*0.6, slopeEnd*0.9, slope) * (1.0 - smoothstep(slopeEnd*0.9, slopeEnd, slope));
+      float wr = smoothstep(slopeEnd*0.9, slopeEnd, slope);
 
-      vec4 dx = mapTexelToLinear( texture2D( dirtMap, coordX ) );
-      vec4 dy = mapTexelToLinear( texture2D( dirtMap, coordY ) );
-      vec4 dz = mapTexelToLinear( texture2D( dirtMap, coordZ ) );
-      vec3 dirt  = dx.rgb * an.x + dy.rgb * an.y + dz.rgb * an.z;
+      float wsum = wg + wd + wr + 1e-5;
+      vec3 baseTex = (grass*wg + dirt*wd + rock*wr) / wsum;
 
-      vec4 rx = mapTexelToLinear( texture2D( rockMap, coordX ) );
-      vec4 ry = mapTexelToLinear( texture2D( rockMap, coordY ) );
-      vec4 rz = mapTexelToLinear( texture2D( rockMap, coordZ ) );
-      vec3 rock  = rx.rgb * an.x + ry.rgb * an.y + rz.rgb * an.z;
-
-      float slope = clamp(1.0 - abs(n.y), 0.0, 1.0); // 0 flat, 1 vertical
-      float g = 1.0 - smoothstep(slopeStart*0.8, slopeStart, slope);
-      float d = smoothstep(slopeStart*0.6, slopeEnd*0.9, slope) * (1.0 - smoothstep(slopeEnd*0.9, slopeEnd, slope));
-      float r = smoothstep(slopeEnd*0.9, slopeEnd, slope);
-
-      vec3 w = normalize(vec3(max(g,0.0), max(d,0.0), max(r,0.0)) + vec3(1e-5));
-      vec3 baseTex = grass*w.x + dirt*w.y + rock*w.z;
-
-      diffuseColor.rgb = baseTex * vColor.rgb; // keep biome/snow vertex tint
+      // Hand off to color/tone mapping; vertex color tint applies later in <color_fragment>
+      diffuseColor.rgb = baseTex;
     `);
 };
 
-/*** ---------- Chunk streaming + pickups + flowers ---------- ***/
+/*** ---------- Chunks + pickups + flowers ---------- ***/
 const chunkMap = new Map();   // key -> mesh
 const itemsMap = new Map();   // key -> pickups array
 const decoMap  = new Map();   // key -> [instanced meshes]
@@ -367,11 +381,9 @@ function buildChunk(cx, cz){
   mesh.frustumCulled = true;
   scene.add(mesh);
 
-  // Pickups
   const items = spawnItemsInChunk(x0, z0);
   itemsMap.set(keyFor(cx,cz), items);
 
-  // Flowers
   const flowers = scatterFlowersInChunk(x0, z0);
   decoMap.set(keyFor(cx,cz), flowers);
 
@@ -526,11 +538,11 @@ function scatterFlowersInChunk(x0, z0){
     if (y > 18.0) continue;              // avoid snowy tops
     if (approxSlope(x,z) > 0.25) continue; // gentle ground only
 
-    // place stem
+    // stem
     m.identity().setPosition(x, y+0.125, z);
     stems.setMatrixAt(i, m);
 
-    // bloom (random color)
+    // bloom color
     m.identity().setPosition(x, y+0.25, z);
     if (Math.random()<0.6 && ip < bloomsPink.count){
       bloomsPink.setMatrixAt(ip++, m);
