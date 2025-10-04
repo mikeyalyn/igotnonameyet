@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Plushlands — Biomes + Light Fog (Classic Water, single file)</title>
+<title>Plushlands — 10-min Days + External Grass</title>
 
 <!-- Import map -->
 <script type="importmap">
@@ -27,19 +27,42 @@
           background:#73b8ff; color:#002; font-weight:700; cursor:pointer; }
   #crosshair { position:fixed; left:50%; top:50%; width:12px; height:12px; transform:translate(-50%,-50%);
                border-radius:50%; box-shadow:0 0 0 2px rgba(255,255,255,.85); opacity:.75; pointer-events:none; }
+  #interact { position:fixed; left:50%; bottom:18%; transform:translateX(-50%); pointer-events:none; color:#fff;
+              background:rgba(0,0,0,.45); border:1px solid rgba(255,255,255,.2); padding:8px 12px; border-radius:999px;
+              font-size:16px; opacity:0; transition:opacity .15s; }
+  #inventory { position: fixed; right:12px; top:12px; width:260px; display:none; color:#fff;
+               background: rgba(0,0,0,.55); border:1px solid rgba(255,255,255,.15); border-radius:14px; padding:12px; }
+  #inventory h3 { margin:0 0 8px; }
+  .grid { display:grid; grid-template-columns: repeat(3, 1fr); gap:8px; }
+  .slot { background: rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.12); border-radius:10px; padding:8px; min-height:60px; }
+  .label { font-size:12px; opacity:.85; }
+  .count { font-size:18px; font-weight:700; }
 </style>
 </head>
 <body>
-<div id="hud"><b>Plushlands</b> — WASD move • SPACE jump</div>
-<div id="help"><h1>Click to enter :3</h1><div>Classic water + soft fog. No external images required.</div><div id="lock">Start</div></div>
+<div id="hud"><b>Plushlands</b> — WASD move • SPACE jump • E pick up • I inventory • B campfire (3 sticks + 1 rock)</div>
+<div id="help"><h1>Click to enter :3</h1>
+  <div>10-minute day/night cycle. Using your <b>assets/grass.png</b> for terrain.</div>
+  <div id="lock">Start</div>
+</div>
 <div id="crosshair"></div>
+<div id="interact">E — Pick up</div>
+
+<div id="inventory">
+  <h3>Inventory</h3>
+  <div class="grid">
+    <div class="slot"><div class="label">Sticks</div><div id="c_stick" class="count">0</div></div>
+    <div class="slot"><div class="label">Rocks</div><div id="c_rock" class="count">0</div></div>
+    <div class="slot"><div class="label">Berries</div><div id="c_berry" class="count">0</div></div>
+  </div>
+</div>
 
 <script type="module">
 import * as THREE from 'three';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 import { Water } from 'three/addons/objects/Water.js';
 
-/* ---------- utils ---------- */
+/* ===== utils ===== */
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 const lerp=(a,b,t)=>a+(b-a)*t;
 const smoother=t=>t*t*t*(t*(6*t-15)+10);
@@ -56,13 +79,14 @@ function fbm2D(x,z,oct=5,baseScale=180,seed=1337){
   return sum/norm;
 }
 
-/* ---------- world config ---------- */
+/* ===== world config ===== */
 const CHUNK_SIZE=160, CHUNK_RES=60, VIEW_RADIUS=3;
 const PLAYER_HEIGHT=1.7, GRAVITY=28, MOVE_ACCEL=65, MOVE_DAMP=10, JUMP_VEL=9.6;
 const TERRAIN_AMPLITUDE=22, SEA_LEVEL=0.0;
-const DAY_MINUTES=4;
+const DAY_MINUTES=10;          // << 10-minute full day/night cycle
+const ITEM_PER_CHUNK=14, PICKUP_DISTANCE=2.0;
 
-/* ---------- three setup ---------- */
+/* ===== three setup ===== */
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x88c6ff);
 const BASE_FOG = 0.0013;
@@ -84,18 +108,16 @@ document.getElementById('lock').onclick = ()=>controls.lock();
 controls.addEventListener('lock', ()=> help.style.display='none');
 controls.addEventListener('unlock', ()=> help.style.display='');
 
-/* ---------- lights ---------- */
+/* ===== lights ===== */
 const sun = new THREE.DirectionalLight(0xffffff, 1.0); sun.position.set(100,200,80); scene.add(sun);
 const ambient = new THREE.AmbientLight(0xffffff, 0.35); scene.add(ambient);
 
-/* ---------- height ---------- */
+/* ===== height & biomes ===== */
 function heightAt(x,z){
   const h = fbm2D(x,z,5,220,2025)*TERRAIN_AMPLITUDE + fbm2D(x+5000,z-8000,3,60,9001)*5;
   const ridge = Math.abs(fbm2D(x-12000,z+11111,3,300,7777));
   return h + ridge*8 - 2;
 }
-
-/* ---------- biomes ---------- */
 function climateAt(x,y,z){
   const t = fbm2D(x+12345,z-54321,4,1600,5522)*0.5+0.5;
   const m = fbm2D(x-33333,z+22222,4,1400,9911)*0.5+0.5;
@@ -121,21 +143,13 @@ const TINT={
   tundra:new THREE.Color(.62,.66,.64), alpine:new THREE.Color(.75,.80,.85)
 };
 
-/* ---------- procedural textures (no external files) ---------- */
-function makeGrassTexture(size=512){
-  const c=document.createElement('canvas'); c.width=c.height=size; const g=c.getContext('2d');
-  // gradient base
-  const grad=g.createLinearGradient(0,0,0,size);
-  grad.addColorStop(0,'#72c26f'); grad.addColorStop(1,'#5aa85a'); g.fillStyle=grad; g.fillRect(0,0,size,size);
-  // tiny speckles + blades
-  g.globalAlpha=0.25;
-  for(let i=0;i<2200;i++){ g.fillStyle=Math.random()<0.5?'#2f6a2f':'#83c783'; const r=Math.random()*1.4+.3;
-    g.beginPath(); g.arc(Math.random()*size, Math.random()*size, r, 0, 6.283); g.fill(); }
-  g.globalAlpha=0.9;
-  for(let i=0;i<1200;i++){ const x=Math.random()*size, y=Math.random()*size, l=6+Math.random()*12, a=-Math.PI/2+(Math.random()*0.6-0.3);
-    g.beginPath(); g.moveTo(x,y); g.lineTo(x+Math.cos(a)*l,y+Math.sin(a)*l); g.lineWidth=1; g.strokeStyle='#4fa554'; g.stroke(); }
-  const tex=new THREE.CanvasTexture(c); tex.wrapS=tex.wrapT=THREE.RepeatWrapping; tex.colorSpace=THREE.SRGBColorSpace; tex.anisotropy=renderer.capabilities.getMaxAnisotropy?.() ?? 1; return tex;
-}
+/* ===== textures ===== */
+// point this to your seamless PNG (default where you placed it)
+const GRASS_URL = 'assets/grass.png';
+
+const loader = new THREE.TextureLoader();
+const grassTex = loader.load(GRASS_URL, (t)=>{ t.wrapS=t.wrapT=THREE.RepeatWrapping; t.colorSpace=THREE.SRGBColorSpace; t.anisotropy=renderer.capabilities.getMaxAnisotropy?.() ?? 1; });
+
 function makeDirtTexture(size=256){
   const c=document.createElement('canvas'); c.width=c.height=size; const g=c.getContext('2d');
   g.fillStyle='#6e553b'; g.fillRect(0,0,size,size);
@@ -151,11 +165,10 @@ function makeRockTexture(size=256){
     g.beginPath(); g.ellipse(Math.random()*size, Math.random()*size, w, h, Math.random()*3.14, 0, 6.283); g.fill(); }
   const tex=new THREE.CanvasTexture(c); tex.wrapS=tex.wrapT=THREE.RepeatWrapping; tex.colorSpace=THREE.SRGBColorSpace; tex.anisotropy=renderer.capabilities.getMaxAnisotropy?.() ?? 1; return tex;
 }
-const grassTex = makeGrassTexture();
 const dirtTex  = makeDirtTexture();
 const rockTex  = makeRockTexture();
 
-/* ---------- terrain material (triplanar + slope, sRGB fix) ---------- */
+/* ===== terrain material (triplanar + slope, sRGB fix) ===== */
 const TEX_METERS = 4;
 const terrainMat = new THREE.MeshStandardMaterial({
   vertexColors:true, flatShading:true, metalness:0, roughness:.95, map:grassTex
@@ -169,24 +182,18 @@ terrainMat.onBeforeCompile=(shader)=>{
     .replace('#include <begin_vertex>', '#include <begin_vertex>\n vWorldPos = (modelMatrix * vec4(transformed,1.0)).xyz;');
   shader.fragmentShader = shader.fragmentShader
     .replace('#include <common>', `#include <common>\nvarying vec3 vWorldPos; varying vec3 vWorldNormal; uniform sampler2D grassMap,dirtMap,rockMap; uniform float tileScale,slopeStart,slopeEnd,triSharp; vec3 srgbToLinear(vec3 c){return pow(c,vec3(2.2));} vec3 triSampleTex(sampler2D tex, vec3 aw, vec3 wp){ vec2 uvX=wp.zy*tileScale, uvY=wp.xz*tileScale, uvZ=wp.xy*tileScale; vec3 tx=texture2D(tex,uvX).rgb, ty=texture2D(tex,uvY).rgb, tz=texture2D(tex,uvZ).rgb; return srgbToLinear(tx*aw.x + ty*aw.y + tz*aw.z);} `)
-    .replace('#include <map_fragment>', `vec3 n=normalize(vWorldNormal); vec3 aw=pow(abs(n),vec3(triSharp)); aw/=(aw.x+aw.y+aw.z+1e-5); vec3 grass=triSampleTex(grassMap,aw,vWorldPos); vec3 dirt=triSampleTex(dirtMap,aw,vWorldPos); vec3 rock=triSampleTex(rockMap,aw,vWorldPos); float slope=clamp(1.0-abs(n.y),0.0,1.0); float wg=1.0-smoothstep(slopeStart*.8,slopeStart,slope); float wd=smoothstep(slopeStart*.6,slopeEnd*.9,slope)*(1.0-smoothstep(slopeEnd*.9,slopeEnd,slope)); float wr=smoothstep(slopeEnd*.9,slopeEnd,slope); float wsum=wg+wd+wr+1e-5; vec3 baseTex=(grass*wg + dirt*wd + rock*wr)/wsum; diffuseColor.rgb=baseTex;`);
+    .replace('#include <map_fragment>', `vec3 n=normalize(vWorldNormal); vec3 aw=pow(abs(n),vec3(triSharp)); aw/=(aw.x+aw.y+aw.z+1e-5); vec3 g=triSampleTex(grassMap,aw,vWorldPos); vec3 d=triSampleTex(dirtMap,aw,vWorldPos); vec3 r=triSampleTex(rockMap,aw,vWorldPos); float slope=clamp(1.0-abs(n.y),0.0,1.0); float wg=1.0-smoothstep(slopeStart*.8,slopeStart,slope); float wd=smoothstep(slopeStart*.6,slopeEnd*.9,slope)*(1.0-smoothstep(slopeEnd*.9,slopeEnd,slope)); float wr=smoothstep(slopeEnd*.9,slopeEnd,slope); float wsum=wg+wd+wr+1e-5; vec3 baseTex=(g*wg + d*wd + r*wr)/wsum; diffuseColor.rgb=baseTex;`);
 };
 terrainMat.needsUpdate=true;
 
-/* ---------- classic water (with fog) ---------- */
-// make a small procedural normal texture for water
-function makeWaterNormal(size=256){
+/* ===== classic water (with fog) ===== */
+function makeWaterNormal(size=256){ // simple procedural normal-ish
   const c=document.createElement('canvas'); c.width=c.height=size; const g=c.getContext('2d');
-  g.fillStyle='#8080ff'; g.fillRect(0,0,size,size);
-  g.globalAlpha=0.5;
-  for(let y=0;y<size;y+=2){
-    const a = Math.sin(y*0.12)*8;
-    g.strokeStyle='rgba(128,128,255,0.5)'; g.beginPath(); g.moveTo(0,y); g.lineTo(size,y+a); g.stroke();
-  }
+  g.fillStyle='#8080ff'; g.fillRect(0,0,size,size); g.globalAlpha=0.45;
+  for(let y=0;y<size;y+=2){ const a=Math.sin(y*0.12)*8; g.strokeStyle='rgba(128,128,255,0.5)'; g.beginPath(); g.moveTo(0,y); g.lineTo(size,y+a); g.stroke(); }
   const t=new THREE.CanvasTexture(c); t.wrapS=t.wrapT=THREE.RepeatWrapping; return t;
 }
 const waterNormals = makeWaterNormal(256);
-
 const waterGeo = new THREE.PlaneGeometry(4000, 4000);
 const water = new Water(waterGeo, {
   textureWidth: 512, textureHeight: 512,
@@ -203,7 +210,7 @@ water.position.y = SEA_LEVEL - 0.08;
 water.renderOrder = 1;
 scene.add(water);
 
-/* ---------- chunked terrain ---------- */
+/* ===== chunked terrain ===== */
 const chunkMap=new Map();
 const keyFor=(cx,cz)=>`${cx},${cz}`;
 function buildChunk(cx,cz){
@@ -220,6 +227,7 @@ function buildChunk(cx,cz){
   const mesh=new THREE.Mesh(geo, terrainMat); scene.add(mesh);
   mesh.position.set(cx*CHUNK_SIZE,0,cz*CHUNK_SIZE);
   chunkMap.set(keyFor(cx,cz), mesh);
+  spawnItemsInChunk(x0,z0); // add pickups into this chunk
   return mesh;
 }
 function ensureChunksAround(px,pz){
@@ -231,16 +239,128 @@ function ensureChunksAround(px,pz){
       if(!chunkMap.has(k)) buildChunk(cx,cz);
     }
   for(const k of chunkMap.keys()){
-    if(!wanted.has(k)){ const m=chunkMap.get(k); scene.remove(m); m.geometry.dispose(); chunkMap.delete(k); }
+    if(!wanted.has(k)){ const m=chunkMap.get(k); scene.remove(m); m.geometry.dispose(); chunkMap.delete(k); removeItemsInChunkKey(k); }
   }
 }
 
-/* ---------- input + movement ---------- */
+/* ===== pickups & inventory ===== */
+const inventory = { stick:0, rock:0, berry:0 };
+const c_stick=document.getElementById('c_stick'), c_rock=document.getElementById('c_rock'), c_berry=document.getElementById('c_berry');
+function updateInventoryUI(){ c_stick.textContent=inventory.stick; c_rock.textContent=inventory.rock; c_berry.textContent=inventory.berry; }
+const itemsMap = new Map();
+function removeItemsInChunkKey(k){
+  const arr = itemsMap.get(k);
+  if (!arr) return;
+  for (const it of arr){ scene.remove(it.mesh); it.mesh.geometry?.dispose?.(); it.mesh.material?.dispose?.(); }
+  itemsMap.delete(k);
+}
+function randInChunk(x0, z0){
+  return [ x0 + (Math.random()*2-1)*(CHUNK_SIZE*0.5-4),
+           z0 + (Math.random()*2-1)*(CHUNK_SIZE*0.5-4) ];
+}
+function makePickupMesh(type){
+  if (type==='rock'){
+    return new THREE.Mesh(new THREE.IcosahedronGeometry(0.3,0),
+      new THREE.MeshStandardMaterial({ color:0x888888, roughness:1 }));
+  }
+  if (type==='stick'){
+    const g=new THREE.CylinderGeometry(0.06,0.06,0.9,6);
+    const m=new THREE.MeshStandardMaterial({ color:0x6b4e2e, roughness:0.9 });
+    const mesh=new THREE.Mesh(g,m); mesh.rotation.z=(Math.random()*0.6-0.3); mesh.rotation.y=Math.random()*Math.PI; return mesh;
+  }
+  // berry bush
+  const group=new THREE.Group();
+  const base=new THREE.SphereGeometry(0.45,12,8,0,Math.PI*2,0,Math.PI/2);
+  const bm=new THREE.MeshStandardMaterial({ color:0x2f6f2f, roughness:1.0 });
+  const bush=new THREE.Mesh(base,bm); group.add(bush);
+  for (let i=0;i<5;i++){
+    const s=new THREE.Mesh(new THREE.SphereGeometry(0.08,10,8), new THREE.MeshStandardMaterial({ color:0xa11c3f, roughness:.7 }));
+    s.position.set((Math.random()-0.5)*0.6, 0.2+Math.random()*0.2, (Math.random()-0.5)*0.6);
+    group.add(s);
+  }
+  group.userData.isGroup = true;
+  return group;
+}
+function spawnItemsInChunk(x0, z0){
+  const cx=Math.round(x0/CHUNK_SIZE), cz=Math.round(z0/CHUNK_SIZE);
+  const key = keyFor(cx,cz);
+  const arr=[]; const n=Math.max(6, Math.floor(ITEM_PER_CHUNK*(Math.random()*0.6+0.7)));
+  for (let i=0;i<n;i++){
+    const type = Math.random()<0.38?'stick': (Math.random()<0.55?'rock':'berry');
+    const [x,z]=randInChunk(x0, z0); const y=heightAt(x,z);
+    if (y < SEA_LEVEL+0.2) continue;
+    const mesh=makePickupMesh(type); mesh.position.set(x, y+(type==='berry'?0.02:0.05), z); scene.add(mesh);
+    arr.push({ type, mesh, x, y, z, taken:false });
+  }
+  itemsMap.set(key, arr);
+}
+const interact = document.getElementById('interact');
+function showInteract(msg){ interact.textContent=msg; interact.style.opacity=1; }
+function hideInteract(){ interact.style.opacity=0; }
+function nearestPickup(px,py,pz){
+  let best=null, bestD=1e9;
+  for (const items of itemsMap.values()){
+    for (const it of items){
+      if (it.taken) continue;
+      const dx = it.x - px, dy = (it.y+0.3) - py, dz = it.z - pz;
+      const d2 = dx*dx + dy*dy + dz*dz;
+      if (d2 < bestD){ bestD = d2; best = it; }
+    }
+  }
+  return best ? { item:best, dist: Math.sqrt(bestD) } : null;
+}
+
+/* ===== campfires ===== */
+const campfires=[];
+function buildCampfireAt(x,z){
+  const g=new THREE.CylinderGeometry(0.18,0.18,0.5,6);
+  const m=new THREE.MeshStandardMaterial({ color:0x5a3d27, roughness:0.95 });
+  const log1=new THREE.Mesh(g,m), log2=log1.clone(), log3=log1.clone();
+  const y = heightAt(x,z) + 0.25;
+  log1.position.set(x,y,z); log2.position.set(x,y,z); log3.position.set(x,y,z);
+  log1.rotation.z=0.4; log2.rotation.z=-0.4; log3.rotation.x=0.6;
+  scene.add(log1,log2,log3);
+  const flame=new THREE.Mesh(new THREE.SphereGeometry(0.22,16,12), new THREE.MeshBasicMaterial({ color:0xffb74d }));
+  flame.position.set(x,y+0.1,z); scene.add(flame);
+  const glow=new THREE.PointLight(0xffa040,1.6,15,1.5); glow.position.set(x,y+0.3,z); scene.add(glow);
+  const baseI=glow.intensity; campfires.push({ glow, flame, t: Math.random()*100, baseI });
+}
+function updateCampfires(dt){
+  for (const c of campfires){
+    c.t += dt*8;
+    c.glow.intensity = c.baseI * (0.75 + Math.sin(c.t)*0.25 + Math.random()*0.08);
+    c.flame.scale.setScalar(0.8 + Math.random()*0.2);
+  }
+}
+
+/* ===== input + movement ===== */
 const keys=new Set();
 addEventListener('keydown',e=>{ if(e.code==='Space') e.preventDefault(); keys.add(e.code); });
 addEventListener('keyup',e=>keys.delete(e.code));
 const vel=new THREE.Vector3(); let canJump=false;
+let pickupCooldown = 0;
 
+const invPanel = document.getElementById('inventory'); let inventoryOpen=false;
+addEventListener('keydown', (e)=>{
+  if (e.code === 'KeyI'){ inventoryOpen = !inventoryOpen; invPanel.style.display = inventoryOpen? 'block' : 'none'; }
+  if (!controls.isLocked) return;
+  if (e.code==='KeyE'){ tryPickup(); }
+  if (e.code==='KeyB'){
+    if (inventory.stick >= 3 && inventory.rock >= 1){
+      inventory.stick -= 3; inventory.rock -= 1; updateInventoryUI();
+      buildCampfireAt(camera.position.x, camera.position.z);
+    }
+  }
+});
+function tryPickup(){
+  if (pickupCooldown > 0) return;
+  const n = nearestPickup(camera.position.x, camera.position.y, camera.position.z);
+  if (n && n.dist <= PICKUP_DISTANCE){
+    const it = n.item; it.taken = true; scene.remove(it.mesh);
+    inventory[it.type] = (inventory[it.type]||0) + 1; updateInventoryUI();
+    pickupCooldown = 0.2;
+  }
+}
 function updatePlayer(dt){
   if(!controls.isLocked) return;
   const f=new THREE.Vector3(), r=new THREE.Vector3();
@@ -256,7 +376,6 @@ function updatePlayer(dt){
   vel.x += acc.x*dt; vel.z += acc.z*dt;
   vel.x -= vel.x*MOVE_DAMP*dt; vel.z -= vel.z*MOVE_DAMP*dt;
   vel.y -= GRAVITY*dt;
-
   if(keys.has('Space') && canJump){ vel.y=JUMP_VEL; canJump=false; }
 
   const p=camera.position;
@@ -266,9 +385,10 @@ function updatePlayer(dt){
   if(p.y < groundY){ p.y=groundY; vel.y=0; canJump=true; }
 }
 
-/* ---------- day/night + fog ---------- */
+/* ===== day/night + fog (10-minute cycle) ===== */
 const clock=new THREE.Clock(); let timeOfDay=8.0, chunkTimer=0;
 function updateDayNight(dt){
+  // 24 game hours per 10 real minutes:
   const minutesPerSec=(24/(DAY_MINUTES*60));
   timeOfDay=(timeOfDay + dt*minutesPerSec*60) % 24;
 
@@ -292,20 +412,37 @@ function updateDayNight(dt){
   scene.fog.density = lerp(scene.fog.density, target, 0.05);
 }
 
-/* ---------- resize ---------- */
-addEventListener('resize',()=>{ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth,innerHeight); });
-
-/* ---------- loop ---------- */
+/* ===== loop ===== */
 function animate(){
   const dt=Math.min(clock.getDelta(), 0.05);
   chunkTimer -= dt; if(chunkTimer<=0){ ensureChunksAround(camera.position.x, camera.position.z); chunkTimer=0.25; }
   updateDayNight(dt);
   updatePlayer(dt);
+  updateCampfires(dt);
+  if (pickupCooldown>0) pickupCooldown -= dt;
+
+  const n = nearestPickup(camera.position.x, camera.position.y, camera.position.z);
+  if (controls.isLocked && n && n.dist <= PICKUP_DISTANCE){
+    const name = n.item.type.charAt(0).toUpperCase()+n.item.type.slice(1);
+    showInteract(`E — Pick up ${name}`);
+  } else hideInteract();
+
   renderer.render(scene, camera);
   requestAnimationFrame(animate);
 }
+
+/* ===== ui helpers ===== */
+function showInteract(msg){ const el=document.getElementById('interact'); el.textContent=msg; el.style.opacity=1; }
+function hideInteract(){ document.getElementById('interact').style.opacity=0; }
+updateInventoryUI();
+
+/* ===== boot ===== */
 ensureChunksAround(camera.position.x, camera.position.z);
 animate();
+
+/* ===== resize ===== */
+addEventListener('resize',()=>{ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth,innerHeight); });
+
 </script>
 </body>
 </html>
