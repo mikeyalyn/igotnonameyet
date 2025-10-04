@@ -388,9 +388,10 @@ function updatePlayer(dt){
 /* ===== day/night + fog (10-minute cycle) ===== */
 const clock=new THREE.Clock(); let timeOfDay=8.0, chunkTimer=0;
 function updateDayNight(dt){
-  // 24 game hours per 10 real minutes:
-  const minutesPerSec=(24/(DAY_MINUTES*60));
-  timeOfDay=(timeOfDay + dt*minutesPerSec*60) % 24;
+// 24 game hours over DAY_MINUTES real minutes
+const HOURS_PER_SEC = 24 / (DAY_MINUTES * 60);  // hours advanced each real second
+timeOfDay = (timeOfDay + dt * HOURS_PER_SEC) % 24;
+
 
   const t=(timeOfDay/24)*Math.PI*2;
   const elev=Math.sin(t), azim=Math.cos(t);
@@ -444,4 +445,5 @@ addEventListener('resize',()=>{ camera.aspect=innerWidth/innerHeight; camera.upd
 </script>
 </body>
 </html>
+
 
