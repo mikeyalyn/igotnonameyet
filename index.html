@@ -198,7 +198,7 @@ const waterGeo = new THREE.PlaneGeometry(4000, 4000);
 const water = new Water(waterGeo, {
   textureWidth: 512, textureHeight: 512,
   waterNormals,
-  alpha: 0.9,
+  alpha: 0.7,
   sunDirection: new THREE.Vector3(),
   sunColor: 0xffffff,
   waterColor: 0x7ec8ff,
@@ -445,5 +445,6 @@ addEventListener('resize',()=>{ camera.aspect=innerWidth/innerHeight; camera.upd
 </script>
 </body>
 </html>
+
 
 
