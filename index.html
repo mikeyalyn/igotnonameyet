@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Plushlands — Caves + Mood</title>
+<title>Plushlands — Caves + Rocky Rims</title>
 
 <script type="importmap">
 {
@@ -34,7 +34,7 @@
 </head>
 <body>
 <div id="hud"><b>Plushlands</b> — WASD • SPACE jump/rise • CTRL dive • E pick up • I inventory • B campfire (3 sticks + 1 rock)</div>
-<div id="help"><h1>Click to enter :3</h1><div>Soft biomes, caves (shader holes + tunnels), mood shifts underground, 10-min day/night, water+swim, items.</div><div id="lock">Start</div></div>
+<div id="help"><h1>Click to enter :3</h1><div>Soft biomes, caves (cut-outs+tunnels), rocky rims, underground mood, 10-min day/night, water+swim, items.</div><div id="lock">Start</div></div>
 <div id="crosshair"></div>
 <div id="interact">E — Pick up</div>
 <div id="inventory"><h3>Inventory</h3>
@@ -111,11 +111,10 @@ const water=new Water(new THREE.PlaneGeometry(4000,4000),{textureWidth:512,textu
 const CAVE_MAX=8;
 const caveEntrances=[]; // {pos: Vector3(x,0,z), radius:number}
 function addCaveEntrance(x,z,r=6){caveEntrances.push({pos:new THREE.Vector3(x,0,z),radius:r});}
-// sprinkle a couple near spawn
+// few near spawn
 addCaveEntrance(40,25,6);
 addCaveEntrance(-60,-30,5);
-
-let inCave=false; // for mood toggle
+let inCave=false;
 
 /* ===== globals after textures ===== */
 let grassTex,sandTex,snowTex,dirtTex,rockTex,terrainMat;
@@ -123,7 +122,7 @@ let grassTex,sandTex,snowTex,dirtTex,rockTex,terrainMat;
 /* HUD */
 const biomeHUD=document.getElementById('biomeHUD'); function updateBiomeHUD(){const x=Math.round(camera.position.x),z=Math.round(camera.position.z);const y=heightAt(x,z);const b=biomeAt(x,y,z);biomeHUD.textContent=`biome: ${b} | x: ${x} z: ${z}`;}
 
-/* decorations (factories) — snip: same as before */
+/* decorations — factories */
 function makeOak(s=1){const g=new THREE.Group();const t=new THREE.Mesh(new THREE.CylinderGeometry(.18*s,.22*s,1.6*s,6),new THREE.MeshStandardMaterial({color:0x6b4e2e,roughness:.95}));t.position.y=.8*s;g.add(t);const c=new THREE.Mesh(new THREE.SphereGeometry(.9*s,16,12),new THREE.MeshStandardMaterial({color:0x2f6f2f,roughness:1}));c.position.y=1.7*s;g.add(c);return g;}
 function makePine(s=1){const g=new THREE.Group();const t=new THREE.Mesh(new THREE.CylinderGeometry(.15*s,.18*s,1.4*s,6),new THREE.MeshStandardMaterial({color:0x654321,roughness:.95}));t.position.y=.7*s;g.add(t);for(let i=0;i<3;i++){const cone=new THREE.Mesh(new THREE.ConeGeometry((.9-i*.22)*s,.9*s,10),new THREE.MeshStandardMaterial({color:0x245235,roughness:1}));cone.position.y=(.9+i*.45)*s;g.add(cone);}return g;}
 function makeCactus(s=1){const m=new THREE.MeshStandardMaterial({color:0x2fa36b,roughness:.9});const main=new THREE.Mesh(new THREE.CylinderGeometry(.22*s,.24*s,1.4*s,8),m);main.position.y=.7*s;const g=new THREE.Group();g.add(main);if(Math.random()<.6){const arm=new THREE.Mesh(new THREE.CylinderGeometry(.12*s,.12*s,.7*s,8),m);arm.position.set(.22*s,.9*s,0);arm.rotation.z=Math.PI/2.3;g.add(arm);}return g;}
@@ -144,11 +143,73 @@ function randInChunk(x0,z0){return [x0+(Math.random()*2-1)*(CHUNK_SIZE*.5-4), z0
 function makePickupMesh(type){if(type==='rock')return new THREE.Mesh(new THREE.IcosahedronGeometry(.3,0),new THREE.MeshStandardMaterial({color:0x888888,roughness:1})); if(type==='stick'){const g=new THREE.CylinderGeometry(.06,.06,.9,6);const m=new THREE.MeshStandardMaterial({color:0x6b4e2e,roughness:.9});const mesh=new THREE.Mesh(g,m);mesh.rotation.z=(Math.random()*.6-.3);mesh.rotation.y=Math.random()*Math.PI;return mesh;}const group=new THREE.Group();const base=new THREE.SphereGeometry(.45,12,8,0,Math.PI*2,0,Math.PI/2);const bm=new THREE.MeshStandardMaterial({color:0x2f6f2f,roughness:1});const bush=new THREE.Mesh(base,bm);group.add(bush);for(let i=0;i<5;i++){const s=new THREE.Mesh(new THREE.SphereGeometry(.08,10,8),new THREE.MeshStandardMaterial({color:0xa11c3f,roughness:.7}));s.position.set((Math.random()-.5)*.6,.2+Math.random()*.2,(Math.random()-.5)*.6);group.add(s);}group.userData.isGroup=true;return group;}
 function spawnItemsInChunk(x0,z0){const key=keyFor(Math.round(x0/CHUNK_SIZE),Math.round(z0/CHUNK_SIZE));const arr=[];const n=Math.max(6,Math.floor(ITEM_PER_CHUNK*(Math.random()*.6+.7)));for(let i=0;i<n;i++){const type=Math.random()<.38?'stick':(Math.random()<.55?'rock':'berry');const [x,z]=randInChunk(x0,z0);const y=heightAt(x,z);if(y<SEA_LEVEL+.2)continue;const mesh=makePickupMesh(type);mesh.position.set(x,y+(type==='berry'?.02:.05),z);scene.add(mesh);arr.push({type,mesh,x,y,z,taken:false});}itemsMap.set(key,arr);}
 
-/* campfire */
+/* campfires */
 const campfires=[]; function buildCampfireAt(x,z){const g=new THREE.CylinderGeometry(.18,.18,.5,6);const m=new THREE.MeshStandardMaterial({color:0x5a3d27,roughness:.95});const a=new THREE.Mesh(g,m),b=a.clone(),c=a.clone();const y=heightAt(x,z)+.25;for(const L of [a,b,c])scene.add(L),L.position.set(x,y,z);a.rotation.z=.4;b.rotation.z=-.4;c.rotation.x=.6;const flame=new THREE.Mesh(new THREE.SphereGeometry(.22,16,12),new THREE.MeshBasicMaterial({color:0xffb74d}));flame.position.set(x,y+.1,z);scene.add(flame);const glow=new THREE.PointLight(0xffa040,1.6,15,1.5);glow.position.set(x,y+.3,z);scene.add(glow);campfires.push({glow,flame,t:Math.random()*100,baseI:glow.intensity});}
 function updateCampfires(dt){for(const c of campfires){c.t+=dt*8;c.glow.intensity=c.baseI*(.75+Math.sin(c.t)*.25+Math.random()*.08);c.flame.scale.setScalar(.8+Math.random()*.2);}}
 
-/* scatter */
+/* ===== rocky rim decorator (NEW) ===== */
+function decorateEntranceRim(ent, startY){
+  // rock skirt cylinder (hides vertical seam)
+  const skirt = new THREE.Mesh(
+    new THREE.CylinderGeometry(ent.radius*0.98, ent.radius*1.18, 0.6, 28, 1, true),
+    new THREE.MeshStandardMaterial({ color: 0x5a5248, roughness: 1, side: THREE.DoubleSide })
+  );
+  skirt.position.set(ent.pos.x, startY-0.28, ent.pos.z);
+  scene.add(skirt);
+
+  // inset ring cap for crisp opening
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(ent.radius*0.96, ent.radius*1.15, 40),
+    new THREE.MeshStandardMaterial({ color: 0x7a6b55, roughness: 1, side: THREE.DoubleSide })
+  );
+  ring.rotation.x = -Math.PI/2;
+  ring.position.set(ent.pos.x, startY+0.02, ent.pos.z);
+  scene.add(ring);
+
+  // belt of rocks (instanced)
+  const N = 36;
+  const rockGeo = new THREE.IcosahedronGeometry(0.35, 0);
+  const rockMat = new THREE.MeshStandardMaterial({ color: 0x7d7f88, roughness: 1.0 });
+  const rocks = new THREE.InstancedMesh(rockGeo, rockMat, N);
+  const dummy = new THREE.Object3D();
+  for (let i=0;i<N;i++){
+    const a = Math.random()*Math.PI*2;
+    const r = ent.radius * (0.92 + Math.random()*0.35);
+    const x = ent.pos.x + Math.cos(a)*r;
+    const z = ent.pos.z + Math.sin(a)*r;
+    const y = heightAt(x,z) + 0.05;
+    const s = 0.45 + Math.random()*1.25;
+    dummy.position.set(x,y,z);
+    dummy.scale.setScalar(s);
+    dummy.rotation.set( (Math.random()*0.25), Math.random()*Math.PI, (Math.random()*0.25) );
+    dummy.updateMatrix();
+    rocks.setMatrixAt(i, dummy.matrix);
+  }
+  rocks.instanceMatrix.needsUpdate = true;
+  scene.add(rocks);
+
+  // pebbles inside lip
+  const N2 = 24;
+  const pebGeo = new THREE.IcosahedronGeometry(0.18, 0);
+  const pebbles = new THREE.InstancedMesh(pebGeo, rockMat, N2);
+  for (let i=0;i<N2;i++){
+    const a = Math.random()*Math.PI*2;
+    const r = ent.radius * (0.65 + Math.random()*0.3);
+    const x = ent.pos.x + Math.cos(a)*r;
+    const z = ent.pos.z + Math.sin(a)*r;
+    const y = heightAt(x,z) + 0.02;
+    const s = 0.2 + Math.random()*0.5;
+    dummy.position.set(x,y,z);
+    dummy.scale.setScalar(s);
+    dummy.rotation.set( (Math.random()*0.15), Math.random()*Math.PI, (Math.random()*0.15) );
+    dummy.updateMatrix();
+    pebbles.setMatrixAt(i, dummy.matrix);
+  }
+  pebbles.instanceMatrix.needsUpdate = true;
+  scene.add(pebbles);
+}
+
+/* ===== butterflies, reeds, lilies etc remain same ===== */
 function scatterDecorationsInChunk(x0,z0){const decos=[];const place=(g,x,z)=>{const y=heightAt(x,z);if(y<SEA_LEVEL+.05)return;g.position.set(x,y,z);scene.add(g);decos.push(g);};
   for(let i=0;i<TREES_PER_CHUNK;i++){const x=x0+(Math.random()*2-1)*(CHUNK_SIZE*.5-6),z=z0+(Math.random()*2-1)*(CHUNK_SIZE*.5-6);const y=heightAt(x,z),b=biomeAt(x,y,z);if(b==='forest'){place(makeOak(1+Math.random()*.4),x,z);if(Math.random()<.12)spawnButterfly(x,y+1.6,z);}else if(b==='taiga'){place(makePine(1+Math.random()*.5),x,z);}else if(b==='meadow'&&Math.random()<.35){place(makeOak(.8+Math.random()*.3),x,z);if(Math.random()<.2)spawnButterfly(x,y+1.4,z);}}
   for(let i=0;i<FLOWERS_PER_CHUNK;i++){const x=x0+(Math.random()*2-1)*(CHUNK_SIZE*.5-4),z=z0+(Math.random()*2-1)*(CHUNK_SIZE*.5-4);const y=heightAt(x,z),b=biomeAt(x,y,z);if(b==='meadow'||b==='shrubland'||b==='forest')place(makeFlower(),x,z);}
@@ -201,7 +262,7 @@ const TEX_METERS=4;
 function makeTerrainMaterial(){
   const mat=new THREE.MeshStandardMaterial({ vertexColors:true, flatShading:true, metalness:0, roughness:.95 });
   mat.onBeforeCompile=(shader)=>{
-    mat.userData.shader=shader; // allow external uniform sync
+    mat.userData.shader=shader;
     shader.uniforms.grassMap   = { value: grassTex };
     shader.uniforms.dirtMap    = { value: dirtTex };
     shader.uniforms.rockMap    = { value: rockTex };
@@ -211,14 +272,13 @@ function makeTerrainMaterial(){
     shader.uniforms.slopeStart = { value: 0.35 };
     shader.uniforms.slopeEnd   = { value: 0.80 };
     shader.uniforms.triSharp   = { value: 4.0 };
-    // cave uniforms
     shader.uniforms.caveCount = { value: 0 };
     shader.uniforms.cavePos   = { value: Array.from({length:CAVE_MAX},()=>new THREE.Vector3(1e6,0,1e6)) };
     shader.uniforms.caveRad   = { value: new Array(CAVE_MAX).fill(0.0) };
 
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>
-        attribute vec4 biomeWeights;   // [grass, sand, snow, taiga]
+        attribute vec4 biomeWeights;
         varying vec4 vBiomeW;
         varying vec3 vWorldPos;
       `)
@@ -239,7 +299,6 @@ function makeTerrainMaterial(){
         uniform sampler2D grassMap, dirtMap, rockMap, sandMap, snowMap;
         uniform float tileScale, slopeStart, slopeEnd, triSharp;
 
-        // caves
         uniform int   caveCount;
         uniform vec3  cavePos[${CAVE_MAX}];
         uniform float caveRad[${CAVE_MAX}];
@@ -275,7 +334,6 @@ function makeTerrainMaterial(){
         float hash12(vec2 p){ return fract(sin(dot(p, vec2(12.9898,78.233))) * 43758.5453); }
       `)
       .replace('#include <map_fragment>', `
-        // cut out cave entrances
         if(insideCaveHole(vWorldPos)){ discard; }
 
         vec3 n = worldGeomNormal(vWorldPos);
@@ -291,13 +349,11 @@ function makeTerrainMaterial(){
         vec4 w = vBiomeW / (dot(vBiomeW, vec4(1.0)) + 1e-5);
         if ((w.x + w.y + w.z + w.w) < 0.001) { w = vec4(1.0,0.0,0.0,0.0); }
 
-        // soften borders
         const float SOFTNESS = 0.75;
         w = pow(w, vec4(SOFTNESS));
         w = max(w, vec4(0.0));
         w /= (dot(w, vec4(1.0)) + 1e-5);
 
-        // jitter edges
         float nJ = hash12(floor(vWorldPos.xz * 0.035));
         vec4 jitter = (nJ - 0.5) * 0.06 * normalize(vec4(1.0, 0.9, 1.1, 1.0));
         w = max(w + jitter, vec4(0.0));
@@ -318,7 +374,7 @@ function makeTerrainMaterial(){
   return mat;
 }
 
-/* sync cave uniforms after compile */
+/* sync cave uniforms */
 function syncCaveUniforms(){
   const shader = terrainMat?.userData?.shader;
   if(!shader) return;
@@ -334,7 +390,7 @@ function syncCaveUniforms(){
   }
 }
 
-/* build a simple tunnel mesh from an entrance (A) */
+/* build tunnel & decorate rim (A) */
 function buildTunnelFromEntrance(ent, length=120, depth=18){
   const startY = heightAt(ent.pos.x, ent.pos.z) - 2.0;
   const start = new THREE.Vector3(ent.pos.x, startY, ent.pos.z);
@@ -346,16 +402,12 @@ function buildTunnelFromEntrance(ent, length=120, depth=18){
   const mat   = new THREE.MeshStandardMaterial({color:0x6e6e6e,roughness:1.0,metalness:0.0});
   const mesh  = new THREE.Mesh(tube, mat); scene.add(mesh);
 
-  // rim ring to hide seam
-  const ring = new THREE.Mesh(new THREE.RingGeometry(ent.radius*0.96, ent.radius*1.15, 32), new THREE.MeshStandardMaterial({color:0x7a6b55, roughness:1, side:THREE.DoubleSide}));
-  ring.rotation.x=-Math.PI/2; ring.position.set(ent.pos.x, startY+0.02, ent.pos.z); scene.add(ring);
+  // NEW: rocky entrance rim
+  decorateEntranceRim(ent, startY);
 
-  // torchy lights
+  // warm point lights
   for(let i=0;i<4;i++){const t=i/3; const p=curve.getPointAt(t); const L=new THREE.PointLight(0xffa860,0.6,18,1.2); L.position.copy(p).add(new THREE.Vector3((Math.random()-.5)*2,1.2+(Math.random()*.6),(Math.random()-.5)*2)); scene.add(L);}
 }
-
-/* build all tunnels once */
-function buildAllTunnels(){for(const ent of caveEntrances) buildTunnelFromEntrance(ent);}
 
 /* mood toggle underground (D) */
 function updateCaveMood(){
@@ -365,11 +417,11 @@ function updateCaveMood(){
   if(shouldCave!==inCave){
     inCave=shouldCave;
     if(inCave){ ambient.intensity=0.12; sun.intensity=0.2; scene.fog.density*=1.15; }
-    else      { ambient.intensity=0.35; sun.intensity=1.0; scene.fog.density=Math.max(scene.fog.density*0.85,0.001); }
+    else      { ambient.intensity=0.35; sun.intensity=1.0; scene.fog.density=Math.max(scene.fog.density*0.85, 0.001); }
   }
 }
 
-/* ===== chunk building (weighted biomes) ===== */
+/* ===== chunks ===== */
 function buildChunk(cx,cz){
   const x0=cx*CHUNK_SIZE,z0=cz*CHUNK_SIZE;
   const geo=new THREE.PlaneGeometry(CHUNK_SIZE,CHUNK_SIZE,CHUNK_RES,CHUNK_RES); geo.rotateX(-Math.PI/2);
@@ -423,7 +475,6 @@ async function initWorldAfterTextures(){
   dirtTex=makeDirtTexture(); rockTex=makeRockTexture();
   terrainMat = makeTerrainMaterial();
   ensureChunksAround(camera.position.x,camera.position.z);
-  // caves: sync uniforms and build tunnels
   syncCaveUniforms();
   for(const ent of caveEntrances) buildTunnelFromEntrance(ent);
   updateBiomeHUD(); animate();
