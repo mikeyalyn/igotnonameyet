@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Plushlands — Biomes + Items + Swimming + Decorations</title>
+<title>Plushlands — Biomes + Items + Swimming + Decorations + Biome HUD</title>
 
 <!-- Import map -->
 <script type="importmap">
@@ -39,12 +39,16 @@
   .count { font-size:18px; font-weight:700; }
   /* underwater overlay */
   #underwater { position:fixed; inset:0; pointer-events:none; background:#5db7ff; mix-blend-mode:multiply; opacity:0; transition:opacity .2s; }
+  /* Biome HUD */
+  #biomeHUD { position:fixed; left:12px; bottom:12px; color:#fff; font:13px/1.2 system-ui;
+              background:rgba(0,0,0,.35); border:1px solid rgba(255,255,255,.15);
+              padding:6px 8px; border-radius:10px; pointer-events:none; }
 </style>
 </head>
 <body>
 <div id="hud"><b>Plushlands</b> — WASD move • SPACE jump/rise • CTRL dive • E pick up • I inventory • B campfire (3 sticks + 1 rock)</div>
 <div id="help"><h1>Click to enter :3</h1>
-  <div>10-minute day/night, classic water (slightly transparent), swimming, items, campfires, and biome decorations. Using your <b>assets/grass.png</b>.</div>
+  <div>10-minute day/night, classic water (slightly transparent), swimming, items, campfires, decorations. Using your <b>assets/grass.png</b>.</div>
   <div id="lock">Start</div>
 </div>
 <div id="crosshair"></div>
@@ -58,6 +62,7 @@
   </div>
 </div>
 <div id="underwater"></div>
+<div id="biomeHUD">biome: … | x: 0 z: 0</div>
 
 <script type="module">
 import * as THREE from 'three';
@@ -208,7 +213,7 @@ terrainMat.onBeforeCompile=(shader)=>{
 terrainMat.needsUpdate=true;
 
 /* ===== classic water (with fog) ===== */
-function makeWaterNormal(size=256){ // simple procedural normal-ish
+function makeWaterNormal(size=256){
   const c=document.createElement('canvas'); c.width=c.height=size; const g=c.getContext('2d');
   g.fillStyle='#8080ff'; g.fillRect(0,0,size,size); g.globalAlpha=0.45;
   for(let y=0;y<size;y+=2){ const a=Math.sin(y*0.12)*8; g.strokeStyle='rgba(128,128,255,0.5)'; g.beginPath(); g.moveTo(0,y); g.lineTo(size,y+a); g.stroke(); }
@@ -231,7 +236,7 @@ water.position.y = SEA_LEVEL - 0.08;
 water.renderOrder = 1;
 scene.add(water);
 
-/* ===== chunked terrain ===== */
+/* ===== chunked terrain + decorations ===== */
 const chunkMap=new Map(), decoMap=new Map();
 const keyFor=(cx,cz)=>`${cx},${cz}`;
 
@@ -327,7 +332,6 @@ function spawnButterfly(x,y,z){
   butterflies.push(b);
 }
 function updateButterflies(dt, isDay){
-  // hide at night
   for(const b of butterflies){ b.visible = isDay; }
   if(!isDay) return;
   for(const b of butterflies){
@@ -344,15 +348,13 @@ function updateButterflies(dt, isDay){
 /* ---- scatter decorations in a chunk ---- */
 function scatterDecorationsInChunk(x0,z0){
   const decos=[];
-  // helper to place safely on land
   function place(group, x, z){
     const y=heightAt(x,z);
-    if(y < SEA_LEVEL + 0.05) return; // avoid underwater placements (except lilies/reeds)
+    if(y < SEA_LEVEL + 0.05) return;
     group.position.set(x,y, z);
     scene.add(group); decos.push(group);
   }
 
-  // trees/flowers by biome
   for(let i=0;i<TREES_PER_CHUNK;i++){
     const x = x0 + (Math.random()*2-1)*(CHUNK_SIZE*0.5-6);
     const z = z0 + (Math.random()*2-1)*(CHUNK_SIZE*0.5-6);
@@ -385,14 +387,13 @@ function scatterDecorationsInChunk(x0,z0){
     const b = biomeAt(x,y,z);
     if(b==='alpine' || b==='tundra'){ place(makeStonePile(), x, z); }
   }
-  // shoreline plants: reeds & lilies
+  // shoreline plants
   for(let i=0;i<REEDS_PER_CHUNK;i++){
     const x = x0 + (Math.random()*2-1)*(CHUNK_SIZE*0.5-6);
     const z = z0 + (Math.random()*2-1)*(CHUNK_SIZE*0.5-6);
     const y = heightAt(x,z);
-    if(y > SEA_LEVEL - 0.15 && y < SEA_LEVEL + 0.35){ // near edge
-      const reed = makeReed();
-      reed.position.set(x, y, z);
+    if(y > SEA_LEVEL - 0.15 && y < SEA_LEVEL + 0.35){
+      const reed = makeReed(); reed.position.set(x, y, z);
       scene.add(reed); decos.push(reed);
     }
   }
@@ -400,9 +401,9 @@ function scatterDecorationsInChunk(x0,z0){
     const x = x0 + (Math.random()*2-1)*(CHUNK_SIZE*0.5-6);
     const z = z0 + (Math.random()*2-1)*(CHUNK_SIZE*0.5-6);
     const y = heightAt(x,z);
-    if(y < SEA_LEVEL - 0.02 && y > SEA_LEVEL - 0.5){ // just underwater
+    if(y < SEA_LEVEL - 0.02 && y > SEA_LEVEL - 0.5){
       const lily = makeLily();
-      lily.position.set(x, SEA_LEVEL-0.06, z); // float right on top
+      lily.position.set(x, SEA_LEVEL-0.06, z);
       scene.add(lily); decos.push(lily);
     }
   }
@@ -500,7 +501,6 @@ function buildChunk(cx,cz){
   mesh.position.set(cx*CHUNK_SIZE,0,cz*CHUNK_SIZE);
   chunkMap.set(keyFor(cx,cz), mesh);
 
-  // items + decorations
   spawnItemsInChunk(x0,z0);
   const decos = scatterDecorationsInChunk(x0,z0);
   decoMap.set(keyFor(cx,cz), decos);
@@ -571,19 +571,16 @@ function nearestPickup(px,py,pz){
 function updatePlayer(dt){
   if(!controls.isLocked) return;
 
-  // movement basis
   const forward=new THREE.Vector3(), right=new THREE.Vector3();
   camera.getWorldDirection(forward); forward.y=0; forward.normalize();
   right.crossVectors(forward,new THREE.Vector3(0,1,0)).multiplyScalar(-1).normalize();
 
-  // is head under water?
   const headY = camera.position.y;
   inWater = headY < (WATER_SURFACE + 0.05);
 
   const p=camera.position;
   const groundY = heightAt(p.x,p.z) + PLAYER_HEIGHT;
 
-  // input acceleration
   const acc=new THREE.Vector3();
   if(keys.has('KeyW')) acc.add(forward);
   if(keys.has('KeyS')) acc.add(forward.clone().multiplyScalar(-1));
@@ -591,7 +588,6 @@ function updatePlayer(dt){
   if(keys.has('KeyD')) acc.add(right);
 
   if(!inWater){
-    // ----- LAND -----
     if(acc.lengthSq()>0) acc.normalize().multiplyScalar(MOVE_ACCEL);
     vel.x += acc.x*dt; vel.z += acc.z*dt;
 
@@ -604,7 +600,6 @@ function updatePlayer(dt){
 
     if(p.y < groundY){ p.y=groundY; vel.y=0; canJump=true; }
   } else {
-    // ----- WATER (SWIM) -----
     const swimBoost = (keys.has('ShiftLeft') || keys.has('ShiftRight')) ? 1.25 : 1.0;
     if(acc.lengthSq()>0) acc.normalize().multiplyScalar(SWIM_ACCEL * swimBoost);
     vel.x += acc.x*dt; vel.z += acc.z*dt;
@@ -612,7 +607,7 @@ function updatePlayer(dt){
     vel.x -= vel.x*SWIM_DAMP*dt*0.6;
     vel.z -= vel.z*SWIM_DAMP*dt*0.6;
 
-    const toSurface = (WATER_SURFACE + 0.02) - headY; // + if below surface
+    const toSurface = (WATER_SURFACE + 0.02) - headY;
     const buoy = THREE.MathUtils.clamp(toSurface * SWIM_SURFACE_STICK, -1.5, 1.5);
     vel.y += (SWIM_BUOYANCY*0.5*dt) + buoy*dt;
     vel.y -= SWIM_GRAVITY*dt;
@@ -623,12 +618,9 @@ function updatePlayer(dt){
     p.x += vel.x*dt; p.z += vel.z*dt; p.y += vel.y*dt;
 
     if(p.y < groundY){ p.y=groundY; if(vel.y<0) vel.y=0; }
-
-    // soft cap just above surface to avoid bob when holding space
     if(p.y > WATER_SURFACE + PLAYER_HEIGHT*0.98 && vel.y > 0) vel.y *= 0.6;
   }
 
-  // enter/exit water transitions
   if(inWater !== wasInWater){
     if(inWater){
       scene.fog.density *= 1.25;
@@ -636,16 +628,24 @@ function updatePlayer(dt){
     }else{
       scene.fog.density *= 0.8;
       uwOverlay.style.opacity = 0.0;
-      canJump = false; // prevent insta-jump on breach
+      canJump = false;
     }
     wasInWater = inWater;
   }
 }
 
-/* ===== day/night + fog (10-minute cycle, correct math) ===== */
+/* ===== Biome HUD ===== */
+const biomeHUD = document.getElementById('biomeHUD');
+function updateBiomeHUD(){
+  const x = Math.round(camera.position.x), z = Math.round(camera.position.z);
+  const y = heightAt(x, z);
+  const b = biomeAt(x, y, z);
+  biomeHUD.textContent = `biome: ${b} | x: ${x} z: ${z}`;
+}
+
+/* ===== day/night + fog (10-minute cycle) ===== */
 const clock=new THREE.Clock(); let timeOfDay=8.0, chunkTimer=0;
 function updateDayNight(dt){
-  // 24 game hours across DAY_MINUTES real minutes
   const HOURS_PER_SEC = 24 / (DAY_MINUTES * 60);
   timeOfDay = (timeOfDay + dt * HOURS_PER_SEC) % 24;
 
@@ -669,7 +669,6 @@ function updateDayNight(dt){
   target += twilight * 0.0007;
   scene.fog.density = lerp(scene.fog.density, target, 0.05);
 
-  // update critters with day/night info
   updateButterflies(dt, isDay);
 }
 
@@ -681,6 +680,7 @@ function animate(){
   updatePlayer(dt);
   updateCampfires(dt);
   if (pickupCooldown>0) pickupCooldown -= dt;
+  updateBiomeHUD();
 
   const n = nearestPickup(camera.position.x, camera.position.y, camera.position.z);
   if (controls.isLocked && n && n.dist <= PICKUP_DISTANCE){
@@ -693,6 +693,7 @@ function animate(){
 }
 updateInventoryUI();
 ensureChunksAround(camera.position.x, camera.position.z);
+updateBiomeHUD();
 animate();
 
 /* ===== resize ===== */
