@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Plushlands — Blended Biomes (stable shaders)</title>
+<title>Plushlands — Soft Biome Blending</title>
 
 <!-- Import map -->
 <script type="importmap">
@@ -35,7 +35,7 @@
 </head>
 <body>
 <div id="hud"><b>Plushlands</b> — WASD • SPACE jump/rise • CTRL dive • E pick up • I inventory • B campfire (3 sticks + 1 rock)</div>
-<div id="help"><h1>Click to enter :3</h1><div>Blended biomes (grass/sand/snow), 10-min day/night, water+swim, items, campfires, decorations.</div><div id="lock">Start</div></div>
+<div id="help"><h1>Click to enter :3</h1><div>Softly blended biomes (grass/sand/snow), 10-min day/night, water+swim, items, campfires, decorations.</div><div id="lock">Start</div></div>
 <div id="crosshair"></div>
 <div id="interact">E — Pick up</div>
 <div id="inventory"><h3>Inventory</h3>
@@ -88,7 +88,7 @@ const BASE_FOG=0.0013; scene.fog=new THREE.FogExp2(0x88c6ff, BASE_FOG);
 const camera=new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.1, 1100); camera.position.set(8, PLAYER_HEIGHT+2, 8);
 const renderer=new THREE.WebGLRenderer({antialias:true}); renderer.setPixelRatio(devicePixelRatio); renderer.setSize(innerWidth,innerHeight);
 renderer.outputColorSpace=THREE.SRGBColorSpace; renderer.toneMapping=THREE.ACESFilmicToneMapping;
-renderer.debug.checkShaderErrors = true; // helpful logs
+renderer.debug.checkShaderErrors = true;
 document.body.appendChild(renderer.domElement);
 
 const controls=new PointerLockControls(camera, renderer.domElement);
@@ -368,7 +368,7 @@ function updateDayNight(dt){
   updateButterflies(dt,isDay);
 }
 
-/* ===== terrain material (stable onBeforeCompile) ===== */
+/* ===== terrain material (soft blending + jitter) ===== */
 const TEX_METERS=4;
 function makeTerrainMaterial(){
   const mat=new THREE.MeshStandardMaterial({ vertexColors:true, flatShading:true, metalness:0, roughness:.95, map:grassTex });
@@ -384,7 +384,7 @@ function makeTerrainMaterial(){
     shader.uniforms.slopeEnd   = { value: 0.80 };
     shader.uniforms.triSharp   = { value: 4.0 };
 
-    // vertex: only pass world pos + biome weights (no normal varyings)
+    // vertex: pass world pos + biome weights
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>
         attribute vec4 biomeWeights;   // [grass, sand, snow, taiga]
@@ -397,7 +397,7 @@ function makeTerrainMaterial(){
         vBiomeW   = biomeWeights;
       `);
 
-    // fragment: compute geometric normal from derivatives; also add NPOT-safe tri-planar
+    // fragment: softmax-style blend + jitter, stable normal via derivatives
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>
         #ifdef GL_OES_standard_derivatives
@@ -426,6 +426,11 @@ function makeTerrainMaterial(){
           vec3 dy = dFdy(wp);
           return normalize(cross(dx, dy));
         }
+
+        // tiny hash for jitter
+        float hash12(vec2 p){
+          return fract(sin(dot(p, vec2(12.9898,78.233))) * 43758.5453);
+        }
       `)
       .replace('#include <map_fragment>', `
         vec3 n = worldGeomNormal(vWorldPos);
@@ -438,12 +443,29 @@ function makeTerrainMaterial(){
         vec3 texSand  = triSample(sandMap,  aw, vWorldPos);
         vec3 texSnow  = triSample(snowMap,  aw, vWorldPos);
 
+        // normalized weights + safety fallback
         vec4 w = vBiomeW / (dot(vBiomeW, vec4(1.0)) + 1e-5);
-        if ((w.x + w.y + w.z + w.w) < 0.001) { w = vec4(1.0,0.0,0.0,0.0); } // safe default: grass
+        if ((w.x + w.y + w.z + w.w) < 0.001) { w = vec4(1.0,0.0,0.0,0.0); }
 
+        // --- soften transitions (softmax-style)
+        const float SOFTNESS = 0.75; // lower => more blending
+        w = pow(w, vec4(SOFTNESS));
+        w = max(w, vec4(0.0));
+        w /= (dot(w, vec4(1.0)) + 1e-5);
+
+        // --- subtle edge jitter to break straight borders
+        float nJ = hash12(floor(vWorldPos.xz * 0.035));
+        vec4 jitter = (nJ - 0.5) * 0.06 * normalize(vec4(1.0, 0.9, 1.1, 1.0));
+        w = max(w + jitter, vec4(0.0));
+        w /= (dot(w, vec4(1.0)) + 1e-5);
+
+        // taiga is dirt/grass mix, slightly desaturated
         vec3 texTaiga = mix(texDirt, texGrass, 0.35) * vec3(0.92,0.95,0.92);
+
+        // base biome blend
         vec3 baseBiome = texGrass*w.x + texSand*w.y + texSnow*w.z + texTaiga*w.w;
 
+        // slope layering: dirt on mids, rock on steep
         float slope = clamp(1.0 - abs(n.y), 0.0, 1.0);
         float wRock = smoothstep(slopeEnd*.9, slopeEnd, slope);
         float wMid  = smoothstep(slopeStart*.6, slopeEnd*.9, slope) * (1.0 - wRock);
