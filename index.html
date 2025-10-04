@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Plushlands — 10-min Days + External Grass</title>
+<title>Plushlands — Biomes + Items + Swimming (10-min days)</title>
 
 <!-- Import map -->
 <script type="importmap">
@@ -37,17 +37,18 @@
   .slot { background: rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.12); border-radius:10px; padding:8px; min-height:60px; }
   .label { font-size:12px; opacity:.85; }
   .count { font-size:18px; font-weight:700; }
+  /* underwater overlay */
+  #underwater { position:fixed; inset:0; pointer-events:none; background:#5db7ff; mix-blend-mode:multiply; opacity:0; transition:opacity .2s; }
 </style>
 </head>
 <body>
-<div id="hud"><b>Plushlands</b> — WASD move • SPACE jump • E pick up • I inventory • B campfire (3 sticks + 1 rock)</div>
+<div id="hud"><b>Plushlands</b> — WASD move • SPACE jump/rise • CTRL dive • E pick up • I inventory • B campfire (3 sticks + 1 rock)</div>
 <div id="help"><h1>Click to enter :3</h1>
-  <div>10-minute day/night cycle. Using your <b>assets/grass.png</b> for terrain.</div>
+  <div>10-minute day/night, classic water, swimming, items, campfires. Using your <b>assets/grass.png</b>.</div>
   <div id="lock">Start</div>
 </div>
 <div id="crosshair"></div>
 <div id="interact">E — Pick up</div>
-
 <div id="inventory">
   <h3>Inventory</h3>
   <div class="grid">
@@ -56,6 +57,7 @@
     <div class="slot"><div class="label">Berries</div><div id="c_berry" class="count">0</div></div>
   </div>
 </div>
+<div id="underwater"></div>
 
 <script type="module">
 import * as THREE from 'three';
@@ -83,8 +85,18 @@ function fbm2D(x,z,oct=5,baseScale=180,seed=1337){
 const CHUNK_SIZE=160, CHUNK_RES=60, VIEW_RADIUS=3;
 const PLAYER_HEIGHT=1.7, GRAVITY=28, MOVE_ACCEL=65, MOVE_DAMP=10, JUMP_VEL=9.6;
 const TERRAIN_AMPLITUDE=22, SEA_LEVEL=0.0;
-const DAY_MINUTES=10;          // << 10-minute full day/night cycle
+const DAY_MINUTES=10;          // 10-minute full day/night
 const ITEM_PER_CHUNK=14, PICKUP_DISTANCE=2.0;
+
+/* --- Swimming config --- */
+const WATER_SURFACE = SEA_LEVEL;
+const SWIM_ACCEL = 26;
+const SWIM_DAMP = 4.0;
+const SWIM_BUOYANCY = 9.5;
+const SWIM_GRAVITY = 6.0;
+const SWIM_ASCEND = 4.5;
+const SWIM_DESCEND = 3.0;
+const SWIM_SURFACE_STICK = 0.9;
 
 /* ===== three setup ===== */
 const scene = new THREE.Scene();
@@ -148,8 +160,11 @@ const TINT={
 const GRASS_URL = 'assets/grass.png';
 
 const loader = new THREE.TextureLoader();
-const grassTex = loader.load(GRASS_URL, (t)=>{ t.wrapS=t.wrapT=THREE.RepeatWrapping; t.colorSpace=THREE.SRGBColorSpace; t.anisotropy=renderer.capabilities.getMaxAnisotropy?.() ?? 1; });
-
+const grassTex = loader.load(GRASS_URL, (t)=>{
+  t.wrapS=t.wrapT=THREE.RepeatWrapping;
+  t.colorSpace=THREE.SRGBColorSpace;
+  t.anisotropy=renderer.capabilities.getMaxAnisotropy?.() ?? 1;
+});
 function makeDirtTexture(size=256){
   const c=document.createElement('canvas'); c.width=c.height=size; const g=c.getContext('2d');
   g.fillStyle='#6e553b'; g.fillRect(0,0,size,size);
@@ -198,7 +213,7 @@ const waterGeo = new THREE.PlaneGeometry(4000, 4000);
 const water = new Water(waterGeo, {
   textureWidth: 512, textureHeight: 512,
   waterNormals,
-  alpha: 0.7,
+  alpha: 0.7,                    // slightly more transparent
   sunDirection: new THREE.Vector3(),
   sunColor: 0xffffff,
   waterColor: 0x7ec8ff,
@@ -294,21 +309,6 @@ function spawnItemsInChunk(x0, z0){
   }
   itemsMap.set(key, arr);
 }
-const interact = document.getElementById('interact');
-function showInteract(msg){ interact.textContent=msg; interact.style.opacity=1; }
-function hideInteract(){ interact.style.opacity=0; }
-function nearestPickup(px,py,pz){
-  let best=null, bestD=1e9;
-  for (const items of itemsMap.values()){
-    for (const it of items){
-      if (it.taken) continue;
-      const dx = it.x - px, dy = (it.y+0.3) - py, dz = it.z - pz;
-      const d2 = dx*dx + dy*dy + dz*dz;
-      if (d2 < bestD){ bestD = d2; best = it; }
-    }
-  }
-  return best ? { item:best, dist: Math.sqrt(bestD) } : null;
-}
 
 /* ===== campfires ===== */
 const campfires=[];
@@ -333,7 +333,7 @@ function updateCampfires(dt){
   }
 }
 
-/* ===== input + movement ===== */
+/* ===== input + movement + swimming ===== */
 const keys=new Set();
 addEventListener('keydown',e=>{ if(e.code==='Space') e.preventDefault(); keys.add(e.code); });
 addEventListener('keyup',e=>keys.delete(e.code));
@@ -352,6 +352,14 @@ addEventListener('keydown', (e)=>{
     }
   }
 });
+
+const interact = document.getElementById('interact');
+function showInteract(msg){ interact.textContent = msg; interact.style.opacity = 1; }
+function hideInteract(){ interact.style.opacity = 0; }
+
+let inWater=false, wasInWater=false;
+const uwOverlay = document.getElementById('underwater');
+
 function tryPickup(){
   if (pickupCooldown > 0) return;
   const n = nearestPickup(camera.position.x, camera.position.y, camera.position.z);
@@ -361,37 +369,99 @@ function tryPickup(){
     pickupCooldown = 0.2;
   }
 }
-function updatePlayer(dt){
-  if(!controls.isLocked) return;
-  const f=new THREE.Vector3(), r=new THREE.Vector3();
-  camera.getWorldDirection(f); f.y=0; f.normalize();
-  r.crossVectors(f,new THREE.Vector3(0,1,0)).multiplyScalar(-1).normalize();
-  const acc=new THREE.Vector3();
-  if(keys.has('KeyW')) acc.add(f);
-  if(keys.has('KeyS')) acc.add(f.clone().multiplyScalar(-1));
-  if(keys.has('KeyA')) acc.add(r.clone().multiplyScalar(-1));
-  if(keys.has('KeyD')) acc.add(r);
-  if(acc.lengthSq()>0) acc.normalize().multiplyScalar(MOVE_ACCEL);
-
-  vel.x += acc.x*dt; vel.z += acc.z*dt;
-  vel.x -= vel.x*MOVE_DAMP*dt; vel.z -= vel.z*MOVE_DAMP*dt;
-  vel.y -= GRAVITY*dt;
-  if(keys.has('Space') && canJump){ vel.y=JUMP_VEL; canJump=false; }
-
-  const p=camera.position;
-  p.x += vel.x*dt; p.z += vel.z*dt; p.y += vel.y*dt;
-
-  const groundY = heightAt(p.x, p.z) + PLAYER_HEIGHT;
-  if(p.y < groundY){ p.y=groundY; vel.y=0; canJump=true; }
+function nearestPickup(px,py,pz){
+  let best=null, bestD=1e9;
+  for (const items of itemsMap.values()){
+    for (const it of items){
+      if (it.taken) continue;
+      const dx = it.x - px, dy = (it.y+0.3) - py, dz = it.z - pz;
+      const d2 = dx*dx + dy*dy + dz*dz;
+      if (d2 < bestD){ bestD = d2; best = it; }
+    }
+  }
+  return best ? { item:best, dist: Math.sqrt(bestD) } : null;
 }
 
-/* ===== day/night + fog (10-minute cycle) ===== */
+function updatePlayer(dt){
+  if(!controls.isLocked) return;
+
+  // movement basis
+  const forward=new THREE.Vector3(), right=new THREE.Vector3();
+  camera.getWorldDirection(forward); forward.y=0; forward.normalize();
+  right.crossVectors(forward,new THREE.Vector3(0,1,0)).multiplyScalar(-1).normalize();
+
+  // is head under water?
+  const headY = camera.position.y;
+  inWater = headY < (WATER_SURFACE + 0.05);
+
+  const p=camera.position;
+  const groundY = heightAt(p.x,p.z) + PLAYER_HEIGHT;
+
+  // input acceleration
+  const acc=new THREE.Vector3();
+  if(keys.has('KeyW')) acc.add(forward);
+  if(keys.has('KeyS')) acc.add(forward.clone().multiplyScalar(-1));
+  if(keys.has('KeyA')) acc.add(right.clone().multiplyScalar(-1));
+  if(keys.has('KeyD')) acc.add(right);
+
+  if(!inWater){
+    // ----- LAND -----
+    if(acc.lengthSq()>0) acc.normalize().multiplyScalar(MOVE_ACCEL);
+    vel.x += acc.x*dt; vel.z += acc.z*dt;
+
+    vel.x -= vel.x*MOVE_DAMP*dt; vel.z -= vel.z*MOVE_DAMP*dt;
+    vel.y -= GRAVITY*dt;
+
+    if(keys.has('Space') && canJump){ vel.y = JUMP_VEL; canJump=false; }
+
+    p.x += vel.x*dt; p.z += vel.z*dt; p.y += vel.y*dt;
+
+    if(p.y < groundY){ p.y=groundY; vel.y=0; canJump=true; }
+  } else {
+    // ----- WATER (SWIM) -----
+    const swimBoost = (keys.has('ShiftLeft') || keys.has('ShiftRight')) ? 1.25 : 1.0;
+    if(acc.lengthSq()>0) acc.normalize().multiplyScalar(SWIM_ACCEL * swimBoost);
+    vel.x += acc.x*dt; vel.z += acc.z*dt;
+
+    vel.x -= vel.x*SWIM_DAMP*dt*0.6;
+    vel.z -= vel.z*SWIM_DAMP*dt*0.6;
+
+    const toSurface = (WATER_SURFACE + 0.02) - headY; // + if below surface
+    const buoy = THREE.MathUtils.clamp(toSurface * SWIM_SURFACE_STICK, -1.5, 1.5);
+    vel.y += (SWIM_BUOYANCY*0.5*dt) + buoy*dt;
+    vel.y -= SWIM_GRAVITY*dt;
+
+    if(keys.has('Space')) vel.y += SWIM_ASCEND*dt;
+    if(keys.has('ControlLeft') || keys.has('ControlRight')) vel.y -= SWIM_DESCEND*dt;
+
+    p.x += vel.x*dt; p.z += vel.z*dt; p.y += vel.y*dt;
+
+    if(p.y < groundY){ p.y=groundY; if(vel.y<0) vel.y=0; }
+
+    // soft cap just above surface to avoid bob when holding space
+    if(p.y > WATER_SURFACE + PLAYER_HEIGHT*0.98 && vel.y > 0) vel.y *= 0.6;
+  }
+
+  // enter/exit water transitions
+  if(inWater !== wasInWater){
+    if(inWater){
+      scene.fog.density *= 1.25;
+      uwOverlay.style.opacity = 0.18;
+    }else{
+      scene.fog.density *= 0.8;
+      uwOverlay.style.opacity = 0.0;
+      canJump = false; // prevent insta-jump on breach
+    }
+    wasInWater = inWater;
+  }
+}
+
+/* ===== day/night + fog (10-minute cycle, correct math) ===== */
 const clock=new THREE.Clock(); let timeOfDay=8.0, chunkTimer=0;
 function updateDayNight(dt){
-// 24 game hours over DAY_MINUTES real minutes
-const HOURS_PER_SEC = 24 / (DAY_MINUTES * 60);  // hours advanced each real second
-timeOfDay = (timeOfDay + dt * HOURS_PER_SEC) % 24;
-
+  // 24 game hours across DAY_MINUTES real minutes
+  const HOURS_PER_SEC = 24 / (DAY_MINUTES * 60);
+  timeOfDay = (timeOfDay + dt * HOURS_PER_SEC) % 24;
 
   const t=(timeOfDay/24)*Math.PI*2;
   const elev=Math.sin(t), azim=Math.cos(t);
@@ -431,20 +501,12 @@ function animate(){
   renderer.render(scene, camera);
   requestAnimationFrame(animate);
 }
-
-/* ===== ui helpers ===== */
 updateInventoryUI();
-
-/* ===== boot ===== */
 ensureChunksAround(camera.position.x, camera.position.z);
 animate();
 
 /* ===== resize ===== */
 addEventListener('resize',()=>{ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth,innerHeight); });
-
 </script>
 </body>
 </html>
-
-
-
