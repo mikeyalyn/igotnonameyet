@@ -432,8 +432,6 @@ function animate(){
 }
 
 /* ===== ui helpers ===== */
-function showInteract(msg){ const el=document.getElementById('interact'); el.textContent=msg; el.style.opacity=1; }
-function hideInteract(){ document.getElementById('interact').style.opacity=0; }
 updateInventoryUI();
 
 /* ===== boot ===== */
@@ -446,3 +444,4 @@ addEventListener('resize',()=>{ camera.aspect=innerWidth/innerHeight; camera.upd
 </script>
 </body>
 </html>
+
