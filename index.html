@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Plushlands — Smooth Biome Blending</title>
+<title>Plushlands — Smooth Biome Blending (with texture preloading)</title>
 
 <!-- Import map -->
 <script type="importmap">
@@ -37,9 +37,7 @@
   .slot { background: rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.12); border-radius:10px; padding:8px; min-height:60px; }
   .label { font-size:12px; opacity:.85; }
   .count { font-size:18px; font-weight:700; }
-  /* underwater overlay */
   #underwater { position:fixed; inset:0; pointer-events:none; background:#5db7ff; mix-blend-mode:multiply; opacity:0; transition:opacity .2s; }
-  /* Biome HUD */
   #biomeHUD { position:fixed; left:12px; bottom:12px; color:#fff; font:13px/1.2 system-ui;
               background:rgba(0,0,0,.35); border:1px solid rgba(255,255,255,.15);
               padding:6px 8px; border-radius:10px; pointer-events:none; }
@@ -93,23 +91,12 @@ const TERRAIN_AMPLITUDE=22, SEA_LEVEL=0.0;
 const DAY_MINUTES=10;
 const ITEM_PER_CHUNK=14, PICKUP_DISTANCE=2.0;
 
-/* --- Swimming config --- */
+/* Swimming config */
 const WATER_SURFACE = SEA_LEVEL;
-const SWIM_ACCEL = 26;
-const SWIM_DAMP = 4.0;
-const SWIM_BUOYANCY = 9.5;
-const SWIM_GRAVITY = 6.0;
-const SWIM_ASCEND = 4.5;
-const SWIM_DESCEND = 3.0;
-const SWIM_SURFACE_STICK = 0.9;
+const SWIM_ACCEL = 26, SWIM_DAMP = 4.0, SWIM_BUOYANCY = 9.5, SWIM_GRAVITY = 6.0, SWIM_ASCEND = 4.5, SWIM_DESCEND = 3.0, SWIM_SURFACE_STICK = 0.9;
 
-/* --- Decorations config --- */
-const TREES_PER_CHUNK = 8;
-const FLOWERS_PER_CHUNK = 60;
-const CACTI_PER_CHUNK = 8;
-const REEDS_PER_CHUNK = 20;
-const LILIES_PER_CHUNK = 6;
-const STONES_PER_CHUNK = 10;
+/* Decorations config */
+const TREES_PER_CHUNK = 8, FLOWERS_PER_CHUNK = 60, CACTI_PER_CHUNK = 8, REEDS_PER_CHUNK = 20, LILIES_PER_CHUNK = 6, STONES_PER_CHUNK = 10;
 
 /* ===== three setup ===== */
 const scene = new THREE.Scene();
@@ -172,23 +159,18 @@ const TINT={
 const GRASS_URL = 'assets/grass.png';
 const SAND_URL  = 'assets/sand.png';
 const SNOW_URL  = 'assets/snow.png';
-
 const loader = new THREE.TextureLoader();
+function tuneTex(t){
+  t.wrapS=t.wrapT=THREE.RepeatWrapping;
+  t.colorSpace=THREE.SRGBColorSpace;
+  t.minFilter=THREE.LinearMipmapLinearFilter;
+  t.magFilter=THREE.LinearFilter;
+  t.generateMipmaps=true;
+  t.anisotropy=renderer.capabilities.getMaxAnisotropy?.() ?? 1;
+  return t;
+}
 
-const grassTex = loader.load(GRASS_URL, (t)=>{
-  t.wrapS=t.wrapT=THREE.RepeatWrapping; t.colorSpace=THREE.SRGBColorSpace;
-  t.anisotropy=renderer.capabilities.getMaxAnisotropy?.() ?? 1;
-});
-const sandTex = loader.load(SAND_URL, (t)=>{
-  t.wrapS=t.wrapT=THREE.RepeatWrapping; t.colorSpace=THREE.SRGBColorSpace;
-  t.anisotropy=renderer.capabilities.getMaxAnisotropy?.() ?? 1;
-});
-const snowTex = loader.load(SNOW_URL, (t)=>{
-  t.wrapS=t.wrapT=THREE.RepeatWrapping; t.colorSpace=THREE.SRGBColorSpace;
-  t.anisotropy=renderer.capabilities.getMaxAnisotropy?.() ?? 1;
-});
-
-/* procedural dirt/rock (swap to PNGs any time) */
+/* procedural dirt/rock (swap to PNGs if you like) */
 function makeDirtTexture(size=256){
   const c=document.createElement('canvas'); c.width=c.height=size; const g=c.getContext('2d');
   g.fillStyle='#6e553b'; g.fillRect(0,0,size,size);
@@ -204,100 +186,8 @@ function makeRockTexture(size=256){
     g.beginPath(); g.ellipse(Math.random()*size, Math.random()*size, w, h, Math.random()*3.14, 0, 6.283); g.fill(); }
   const tex=new THREE.CanvasTexture(c); tex.wrapS=tex.wrapT=THREE.RepeatWrapping; tex.colorSpace=THREE.SRGBColorSpace; tex.anisotropy=renderer.capabilities.getMaxAnisotropy?.() ?? 1; return tex;
 }
-const dirtTex  = makeDirtTexture();
-const rockTex  = makeRockTexture();
 
-/* ===== terrain material (weighted biome blend + slope rock) ===== */
-const TEX_METERS = 4;
-const terrainMat = new THREE.MeshStandardMaterial({
-  vertexColors:true, flatShading:true, metalness:0, roughness:.95, map:grassTex
-});
-
-terrainMat.onBeforeCompile = (shader)=>{
-  shader.uniforms.grassMap={value:grassTex};
-  shader.uniforms.dirtMap={value:dirtTex};
-  shader.uniforms.rockMap={value:rockTex};
-  shader.uniforms.sandMap={value:sandTex};
-  shader.uniforms.snowMap={value:snowTex};
-  shader.uniforms.tileScale={value:1.0/TEX_METERS};
-  shader.uniforms.slopeStart={value:.35};
-  shader.uniforms.slopeEnd={value:.80};
-  shader.uniforms.triSharp={value:4.0};
-
-  // === vertex ===
-  shader.vertexShader = shader.vertexShader
-    .replace('#include <common>', `#include <common>
-      attribute vec4 biomeWeights; // [grass, sand, snow, taiga]
-      varying vec4 vBiomeW;
-      varying vec3 vWorldPos;
-      varying vec3 vWorldNormal;
-    `)
-    .replace('#include <beginnormal_vertex>', `
-      #include <beginnormal_vertex>
-      vWorldNormal = normalize( mat3(modelMatrix) * objectNormal );
-    `)
-    .replace('#include <begin_vertex>', `
-      #include <begin_vertex>
-      vWorldPos = (modelMatrix * vec4(transformed,1.0)).xyz;
-      vBiomeW = biomeWeights;
-    `);
-
-  // === fragment ===
-  shader.fragmentShader = shader.fragmentShader
-    .replace('#include <common>', `#include <common>
-      varying vec4 vBiomeW;
-      varying vec3 vWorldPos;
-      varying vec3 vWorldNormal;
-      uniform sampler2D grassMap,dirtMap,rockMap,sandMap,snowMap;
-      uniform float tileScale,slopeStart,slopeEnd,triSharp;
-
-      vec3 srgbToLinear(vec3 c){ return pow(c, vec3(2.2)); }
-      vec3 triSample(sampler2D tex, vec3 aw, vec3 wp){
-        vec2 uvX = wp.zy * tileScale;
-        vec2 uvY = wp.xz * tileScale;
-        vec2 uvZ = wp.xy * tileScale;
-        vec3 tx = texture2D(tex, uvX).rgb;
-        vec3 ty = texture2D(tex, uvY).rgb;
-        vec3 tz = texture2D(tex, uvZ).rgb;
-        return srgbToLinear(tx*aw.x + ty*aw.y + tz*aw.z);
-      }
-    `)
-    .replace('#include <map_fragment>', `
-      vec3 n = normalize(vWorldNormal);
-      vec3 aw = pow(abs(n), vec3(triSharp)); aw /= (aw.x+aw.y+aw.z+1e-5);
-
-      vec3 texGrass = triSample(grassMap, aw, vWorldPos);
-      vec3 texDirt  = triSample(dirtMap,  aw, vWorldPos);
-      vec3 texRock  = triSample(rockMap,  aw, vWorldPos);
-      vec3 texSand  = triSample(sandMap,  aw, vWorldPos);
-      vec3 texSnow  = triSample(snowMap,  aw, vWorldPos);
-
-      // normalize incoming weights (defensive)
-      vec4 w = vBiomeW / (dot(vBiomeW, vec4(1.0)) + 1e-5);
-
-      // taiga base = dirt/grass mix, a bit darker
-      vec3 texTaiga = mix(texDirt, texGrass, 0.35) * vec3(0.92,0.95,0.92);
-
-      // base biome blend
-      vec3 baseBiome = texGrass * w.x + texSand * w.y + texSnow * w.z + texTaiga * w.w;
-
-      // slope layering: mid → dirt, steep → rock
-      float slope = clamp(1.0 - abs(n.y), 0.0, 1.0);
-      float wRock = smoothstep(slopeEnd*.9, slopeEnd, slope);      // steep
-      float wMid  = smoothstep(slopeStart*.6, slopeEnd*.9, slope) * (1.0-wRock);
-      float wFlat = 1.0 - (wMid + wRock);
-
-      vec3 layered =
-          baseBiome * wFlat +
-          mix(baseBiome, texDirt, 0.55) * wMid +
-          texRock * wRock;
-
-      diffuseColor.rgb = layered;
-    `);
-};
-terrainMat.needsUpdate=true;
-
-/* ===== classic water (with fog) ===== */
+/* ===== water ===== */
 function makeWaterNormal(size=256){
   const c=document.createElement('canvas'); c.width=c.height=size; const g=c.getContext('2d');
   g.fillStyle='#8080ff'; g.fillRect(0,0,size,size); g.globalAlpha=0.45;
@@ -309,7 +199,7 @@ const waterGeo = new THREE.PlaneGeometry(4000, 4000);
 const water = new Water(waterGeo, {
   textureWidth: 512, textureHeight: 512,
   waterNormals,
-  alpha: 0.7, // slightly transparent
+  alpha: 0.7,
   sunDirection: new THREE.Vector3(),
   sunColor: 0xffffff,
   waterColor: 0x7ec8ff,
@@ -321,157 +211,228 @@ water.position.y = SEA_LEVEL - 0.08;
 water.renderOrder = 1;
 scene.add(water);
 
-/* ===== chunked terrain + decorations ===== */
-const chunkMap=new Map(), decoMap=new Map();
-const keyFor=(cx,cz)=>`${cx},${cz}`;
+/* ===== globals for terrain after textures ===== */
+let grassTex, sandTex, snowTex, dirtTex, rockTex, terrainMat;
 
-/* simple deco factories */
-function makeOak(scale=1){
-  const g= new THREE.Group();
-  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.18*scale,0.22*scale,1.6*scale,6),
-    new THREE.MeshStandardMaterial({color:0x6b4e2e, roughness:0.95}));
-  trunk.position.y = 0.8*scale; g.add(trunk);
-  const crown = new THREE.Mesh(new THREE.SphereGeometry(0.9*scale, 16, 12),
-    new THREE.MeshStandardMaterial({color:0x2f6f2f, roughness:1}));
-  crown.position.y = 1.7*scale; g.add(crown);
-  return g;
+/* ===== biome HUD ===== */
+const biomeHUD = document.getElementById('biomeHUD');
+function updateBiomeHUD(){
+  const x = Math.round(camera.position.x), z = Math.round(camera.position.z);
+  const y = heightAt(x, z);
+  const b = biomeAt(x, y, z);
+  biomeHUD.textContent = `biome: ${b} | x: ${x} z: ${z}`;
 }
-function makePine(scale=1){
-  const g=new THREE.Group();
-  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.15*scale,0.18*scale,1.4*scale,6),
-    new THREE.MeshStandardMaterial({color:0x654321, roughness:0.95}));
+
+/* ===== decorations (trees/flowers/etc.) ===== */
+function makeOak(scale=1){ const g=new THREE.Group();
+  const trunk=new THREE.Mesh(new THREE.CylinderGeometry(0.18*scale,0.22*scale,1.6*scale,6), new THREE.MeshStandardMaterial({color:0x6b4e2e,roughness:0.95}));
+  trunk.position.y=0.8*scale; g.add(trunk);
+  const crown=new THREE.Mesh(new THREE.SphereGeometry(0.9*scale,16,12), new THREE.MeshStandardMaterial({color:0x2f6f2f,roughness:1}));
+  crown.position.y=1.7*scale; g.add(crown); return g; }
+function makePine(scale=1){ const g=new THREE.Group();
+  const trunk=new THREE.Mesh(new THREE.CylinderGeometry(0.15*scale,0.18*scale,1.4*scale,6), new THREE.MeshStandardMaterial({color:0x654321,roughness:0.95}));
   trunk.position.y=0.7*scale; g.add(trunk);
-  for(let i=0;i<3;i++){
-    const cone = new THREE.Mesh(new THREE.ConeGeometry((0.9-i*0.22)*scale, 0.9*scale, 10),
-      new THREE.MeshStandardMaterial({color:0x245235, roughness:1}));
-    cone.position.y = (0.9+i*0.45)*scale; g.add(cone);
-  }
-  return g;
-}
-function makeCactus(scale=1){
-  const m=new THREE.MeshStandardMaterial({color:0x2fa36b, roughness:.9});
-  const main=new THREE.Mesh(new THREE.CylinderGeometry(0.22*scale,0.24*scale,1.4*scale,8), m);
-  main.position.y=0.7*scale;
+  for(let i=0;i<3;i++){ const cone=new THREE.Mesh(new THREE.ConeGeometry((0.9-i*0.22)*scale,0.9*scale,10), new THREE.MeshStandardMaterial({color:0x245235,roughness:1}));
+    cone.position.y=(0.9+i*0.45)*scale; g.add(cone);} return g; }
+function makeCactus(scale=1){ const m=new THREE.MeshStandardMaterial({color:0x2fa36b,roughness:.9});
+  const main=new THREE.Mesh(new THREE.CylinderGeometry(0.22*scale,0.24*scale,1.4*scale,8), m); main.position.y=0.7*scale;
   const g=new THREE.Group(); g.add(main);
-  if(Math.random()<0.6){
-    const arm=new THREE.Mesh(new THREE.CylinderGeometry(0.12*scale,0.12*scale,0.7*scale,8), m);
-    arm.position.set(0.22*scale, 0.9*scale, 0); arm.rotation.z = Math.PI/2.3; g.add(arm);
-  }
-  return g;
-}
-function makeFlower(){
-  const g=new THREE.Group();
-  const stem=new THREE.Mesh(new THREE.CylinderGeometry(0.02,0.02,0.25,6),
-    new THREE.MeshStandardMaterial({color:0x2f6f2f, roughness:1}));
+  if(Math.random()<0.6){ const arm=new THREE.Mesh(new THREE.CylinderGeometry(0.12*scale,0.12*scale,0.7*scale,8), m);
+    arm.position.set(0.22*scale,0.9*scale,0); arm.rotation.z=Math.PI/2.3; g.add(arm);} return g; }
+function makeFlower(){ const g=new THREE.Group();
+  const stem=new THREE.Mesh(new THREE.CylinderGeometry(0.02,0.02,0.25,6), new THREE.MeshStandardMaterial({color:0x2f6f2f,roughness:1}));
   stem.position.y=0.125; g.add(stem);
-  const petalColors=[0xff6aa2,0xffd166,0x8dec7a,0x7aa6ff,0xff9b6a];
-  const head=new THREE.Mesh(new THREE.SphereGeometry(0.06,10,8),
-    new THREE.MeshStandardMaterial({color:petalColors[(Math.random()*petalColors.length)|0], roughness:.8}));
-  head.position.y=0.28; g.add(head);
-  return g;
-}
-function makeReed(){
-  const g=new THREE.Group();
-  const stem=new THREE.Mesh(new THREE.CylinderGeometry(0.025,0.03,0.8,6),
-    new THREE.MeshStandardMaterial({color:0x356f2f, roughness:1}));
+  const colors=[0xff6aa2,0xffd166,0x8dec7a,0x7aa6ff,0xff9b6a];
+  const head=new THREE.Mesh(new THREE.SphereGeometry(0.06,10,8), new THREE.MeshStandardMaterial({color:colors[(Math.random()*colors.length)|0],roughness:.8}));
+  head.position.y=0.28; g.add(head); return g; }
+function makeReed(){ const g=new THREE.Group();
+  const stem=new THREE.Mesh(new THREE.CylinderGeometry(0.025,0.03,0.8,6), new THREE.MeshStandardMaterial({color:0x356f2f,roughness:1}));
   stem.position.y=0.4; g.add(stem);
-  const top=new THREE.Mesh(new THREE.SphereGeometry(0.05,10,8),
-    new THREE.MeshStandardMaterial({color:0x6b3a1e, roughness:.9}));
-  top.position.y=0.85; g.add(top);
-  return g;
-}
-function makeLily(){
-  const pad=new THREE.Mesh(new THREE.CircleGeometry(0.35, 16),
-    new THREE.MeshStandardMaterial({color:0x3aa36f, roughness:1}));
-  pad.rotation.x = -Math.PI/2;
-  const flower=new THREE.Mesh(new THREE.CircleGeometry(0.12, 8),
-    new THREE.MeshStandardMaterial({color:0xffd7a8, roughness:.8}));
-  flower.rotation.x = -Math.PI/2; flower.position.y = 0.01;
-  const g=new THREE.Group(); g.add(pad, flower); return g;
-}
-function makeStonePile(){
-  const g=new THREE.Group();
-  const m=new THREE.MeshStandardMaterial({color:0x80868f, roughness:1});
-  for(let i=0;i<3;i++){
-    const s=0.18 + Math.random()*0.35;
-    const rock=new THREE.Mesh(new THREE.IcosahedronGeometry(s,0), m);
-    rock.position.set((Math.random()-.5)*0.6, s*0.6, (Math.random()-.5)*0.6);
-    g.add(rock);
-  }
-  return g;
-}
+  const top=new THREE.Mesh(new THREE.SphereGeometry(0.05,10,8), new THREE.MeshStandardMaterial({color:0x6b3a1e,roughness:.9}));
+  top.position.y=0.85; g.add(top); return g; }
+function makeLily(){ const pad=new THREE.Mesh(new THREE.CircleGeometry(0.35,16), new THREE.MeshStandardMaterial({color:0x3aa36f,roughness:1}));
+  pad.rotation.x=-Math.PI/2; const flower=new THREE.Mesh(new THREE.CircleGeometry(0.12,8), new THREE.MeshStandardMaterial({color:0xffd7a8,roughness:.8}));
+  flower.rotation.x=-Math.PI/2; flower.position.y=0.01; const g=new THREE.Group(); g.add(pad,flower); return g; }
+function makeStonePile(){ const g=new THREE.Group();
+  const m=new THREE.MeshStandardMaterial({color:0x80868f,roughness:1});
+  for(let i=0;i<3;i++){ const s=0.18+Math.random()*0.35; const rock=new THREE.Mesh(new THREE.IcosahedronGeometry(s,0), m);
+    rock.position.set((Math.random()-.5)*0.6, s*0.6, (Math.random()-.5)*0.6); g.add(rock);} return g; }
 
 /* butterflies */
 const butterflies=[];
 function spawnButterfly(x,y,z){
-  const geo=new THREE.SphereGeometry(0.05, 6, 6);
-  const mat=new THREE.MeshBasicMaterial({color:[0xff7aa6,0xffd166,0x7ab6ff,0x8dec7a][(Math.random()*4)|0]});
-  const b=new THREE.Mesh(geo,mat);
-  b.position.set(x,y,z);
-  b.userData={t:Math.random()*100, baseY:y, radius: 2+Math.random()*3, speed: 0.6+Math.random()*0.6, center:new THREE.Vector3(x,y,z)};
-  scene.add(b);
-  butterflies.push(b);
+  const b=new THREE.Mesh(new THREE.SphereGeometry(0.05,6,6), new THREE.MeshBasicMaterial({color:[0xff7aa6,0xffd166,0x7ab6ff,0x8dec7a][(Math.random()*4)|0]}));
+  b.position.set(x,y,z); b.userData={t:Math.random()*100, baseY:y, radius:2+Math.random()*3, speed:0.6+Math.random()*0.6, center:new THREE.Vector3(x,y,z)};
+  scene.add(b); butterflies.push(b);
 }
-function updateButterflies(dt, isDay){
-  for(const b of butterflies){ b.visible = isDay; }
-  if(!isDay) return;
-  for(const b of butterflies){
-    const u=b.userData; u.t += dt*u.speed;
-    const nx = u.center.x + Math.cos(u.t)*u.radius;
-    const nz = u.center.z + Math.sin(u.t)*u.radius;
-    const ny = u.baseY + Math.sin(u.t*2)*0.4 + 0.2;
-    b.position.set(nx, ny, nz);
+function updateButterflies(dt,isDay){ for(const b of butterflies) b.visible=isDay;
+  if(!isDay) return; for(const b of butterflies){ const u=b.userData; u.t+=dt*u.speed;
+    b.position.set(u.center.x+Math.cos(u.t)*u.radius, u.baseY+Math.sin(u.t*2)*0.4+0.2, u.center.z+Math.sin(u.t)*u.radius); } }
+
+/* ===== items + inventory ===== */
+const inventory={ stick:0, rock:0, berry:0 };
+const c_stick=document.getElementById('c_stick'), c_rock=document.getElementById('c_rock'), c_berry=document.getElementById('c_berry');
+function updateInventoryUI(){ c_stick.textContent=inventory.stick; c_rock.textContent=inventory.rock; c_berry.textContent=inventory.berry; }
+const itemsMap=new Map(), decoMap=new Map(), chunkMap=new Map();
+const keyFor=(cx,cz)=>`${cx},${cz}`;
+function removeItemsInChunkKey(k){
+  const arr=itemsMap.get(k); if(arr){ for(const it of arr){ scene.remove(it.mesh); it.mesh.geometry?.dispose?.(); it.mesh.material?.dispose?.(); } itemsMap.delete(k); }
+  const dec=decoMap.get(k); if(dec){ for(const d of dec){ scene.remove(d); d.traverse?.(o=>{o.geometry?.dispose?.(); o.material?.dispose?.();}); } decoMap.delete(k); }
+}
+function randInChunk(x0,z0){ return [ x0+(Math.random()*2-1)*(CHUNK_SIZE*0.5-4), z0+(Math.random()*2-1)*(CHUNK_SIZE*0.5-4) ]; }
+function makePickupMesh(type){
+  if(type==='rock') return new THREE.Mesh(new THREE.IcosahedronGeometry(0.3,0), new THREE.MeshStandardMaterial({color:0x888888,roughness:1}));
+  if(type==='stick'){ const g=new THREE.CylinderGeometry(0.06,0.06,0.9,6); const m=new THREE.MeshStandardMaterial({color:0x6b4e2e,roughness:0.9});
+    const mesh=new THREE.Mesh(g,m); mesh.rotation.z=(Math.random()*0.6-0.3); mesh.rotation.y=Math.random()*Math.PI; return mesh; }
+  const group=new THREE.Group(); const base=new THREE.SphereGeometry(0.45,12,8,0,Math.PI*2,0,Math.PI/2);
+  const bm=new THREE.MeshStandardMaterial({color:0x2f6f2f,roughness:1}); const bush=new THREE.Mesh(base,bm); group.add(bush);
+  for(let i=0;i<5;i++){ const s=new THREE.Mesh(new THREE.SphereGeometry(0.08,10,8), new THREE.MeshStandardMaterial({color:0xa11c3f,roughness:.7}));
+    s.position.set((Math.random()-0.5)*0.6,0.2+Math.random()*0.2,(Math.random()-0.5)*0.6); group.add(s);} group.userData.isGroup=true; return group;
+}
+function spawnItemsInChunk(x0,z0){
+  const key=keyFor(Math.round(x0/CHUNK_SIZE), Math.round(z0/CHUNK_SIZE));
+  const arr=[]; const n=Math.max(6, Math.floor(ITEM_PER_CHUNK*(Math.random()*0.6+0.7)));
+  for(let i=0;i<n;i++){
+    const type=Math.random()<0.38?'stick':(Math.random()<0.55?'rock':'berry');
+    const [x,z]=randInChunk(x0,z0); const y=heightAt(x,z); if(y<SEA_LEVEL+0.2) continue;
+    const mesh=makePickupMesh(type); mesh.position.set(x, y+(type==='berry'?0.02:0.05), z); scene.add(mesh);
+    arr.push({type,mesh,x,y,z,taken:false});
   }
+  itemsMap.set(key,arr);
 }
 
-/* ===== weighted biome chunk build ===== */
+/* ===== campfires ===== */
+const campfires=[];
+function buildCampfireAt(x,z){
+  const g=new THREE.CylinderGeometry(0.18,0.18,0.5,6);
+  const m=new THREE.MeshStandardMaterial({color:0x5a3d27,roughness:0.95});
+  const log1=new THREE.Mesh(g,m), log2=log1.clone(), log3=log1.clone();
+  const y=heightAt(x,z)+0.25; log1.position.set(x,y,z); log2.position.set(x,y,z); log3.position.set(x,y,z);
+  log1.rotation.z=0.4; log2.rotation.z=-0.4; log3.rotation.x=0.6; scene.add(log1,log2,log3);
+  const flame=new THREE.Mesh(new THREE.SphereGeometry(0.22,16,12), new THREE.MeshBasicMaterial({color:0xffb74d})); flame.position.set(x,y+0.1,z); scene.add(flame);
+  const glow=new THREE.PointLight(0xffa040,1.6,15,1.5); glow.position.set(x,y+0.3,z); scene.add(glow);
+  const baseI=glow.intensity; campfires.push({glow,flame,t:Math.random()*100,baseI});
+}
+function updateCampfires(dt){ for(const c of campfires){ c.t+=dt*8; c.glow.intensity=c.baseI*(0.75+Math.sin(c.t)*0.25+Math.random()*0.08); c.flame.scale.setScalar(0.8+Math.random()*0.2); } }
+
+/* ===== decorations scatter ===== */
+function scatterDecorationsInChunk(x0,z0){
+  const decos=[]; const place=(group,x,z)=>{ const y=heightAt(x,z); if(y<SEA_LEVEL+0.05) return; group.position.set(x,y,z); scene.add(group); decos.push(group); };
+  for(let i=0;i<TREES_PER_CHUNK;i++){ const x=x0+(Math.random()*2-1)*(CHUNK_SIZE*0.5-6), z=z0+(Math.random()*2-1)*(CHUNK_SIZE*0.5-6);
+    const y=heightAt(x,z), b=biomeAt(x,y,z);
+    if(b==='forest'){ place(makeOak(1.0+Math.random()*0.4),x,z); if(Math.random()<0.12) spawnButterfly(x,y+1.6,z); }
+    else if(b==='taiga'){ place(makePine(1.0+Math.random()*0.5),x,z); }
+    else if(b==='meadow'&&Math.random()<0.35){ place(makeOak(0.8+Math.random()*0.3),x,z); if(Math.random()<0.2) spawnButterfly(x,y+1.4,z); } }
+  for(let i=0;i<FLOWERS_PER_CHUNK;i++){ const x=x0+(Math.random()*2-1)*(CHUNK_SIZE*0.5-4), z=z0+(Math.random()*2-1)*(CHUNK_SIZE*0.5-4);
+    const y=heightAt(x,z), b=biomeAt(x,y,z); if(b==='meadow'||b==='shrubland'||b==='forest'){ place(makeFlower(),x,z); } }
+  for(let i=0;i<CACTI_PER_CHUNK;i++){ const x=x0+(Math.random()*2-1)*(CHUNK_SIZE*0.5-6), z=z0+(Math.random()*2-1)*(CHUNK_SIZE*0.5-6);
+    const y=heightAt(x,z), b=biomeAt(x,y,z); if(b==='desert'){ place(makeCactus(0.9+Math.random()*0.5),x,z); } }
+  for(let i=0;i<STONES_PER_CHUNK;i++){ const x=x0+(Math.random()*2-1)*(CHUNK_SIZE*0.5-6), z=z0+(Math.random()*2-1)*(CHUNK_SIZE*0.5-6);
+    const y=heightAt(x,z), b=biomeAt(x,y,z); if(b==='alpine'||b==='tundra'){ place(makeStonePile(),x,z); } }
+  for(let i=0;i<REEDS_PER_CHUNK;i++){ const x=x0+(Math.random()*2-1)*(CHUNK_SIZE*0.5-6), z=z0+(Math.random()*2-1)*(CHUNK_SIZE*0.5-6);
+    const y=heightAt(x,z); if(y>SEA_LEVEL-0.15 && y<SEA_LEVEL+0.35){ const reed=makeReed(); reed.position.set(x,y,z); scene.add(reed); decos.push(reed); } }
+  for(let i=0;i<LILIES_PER_CHUNK;i++){ const x=x0+(Math.random()*2-1)*(CHUNK_SIZE*0.5-6), z=z0+(Math.random()*2-1)*(CHUNK_SIZE*0.5-6);
+    const y=heightAt(x,z); if(y<SEA_LEVEL-0.02 && y>SEA_LEVEL-0.5){ const lily=makeLily(); lily.position.set(x,SEA_LEVEL-0.06,z); scene.add(lily); decos.push(lily); } }
+  return decos;
+}
+
+/* ===== input + movement + swimming ===== */
+const keys=new Set(); addEventListener('keydown',e=>{ if(e.code==='Space') e.preventDefault(); keys.add(e.code); });
+addEventListener('keyup',e=>keys.delete(e.code));
+const vel=new THREE.Vector3(); let canJump=false, pickupCooldown=0;
+const invPanel=document.getElementById('inventory'); let inventoryOpen=false;
+addEventListener('keydown',(e)=>{
+  if(e.code==='KeyI'){ inventoryOpen=!inventoryOpen; invPanel.style.display=inventoryOpen?'block':'none'; }
+  if(!controls.isLocked) return;
+  if(e.code==='KeyE'){ tryPickup(); }
+  if(e.code==='KeyB'){ if(inventory.stick>=3 && inventory.rock>=1){ inventory.stick-=3; inventory.rock-=1; updateInventoryUI(); buildCampfireAt(camera.position.x,camera.position.z); } }
+});
+const interact=document.getElementById('interact');
+function showInteract(msg){ interact.textContent=msg; interact.style.opacity=1; }
+function hideInteract(){ interact.style.opacity=0; }
+let inWater=false, wasInWater=false; const uwOverlay=document.getElementById('underwater');
+function tryPickup(){ if(pickupCooldown>0) return; const n=nearestPickup(camera.position.x,camera.position.y,camera.position.z);
+  if(n && n.dist<=PICKUP_DISTANCE){ const it=n.item; it.taken=true; scene.remove(it.mesh); inventory[it.type]=(inventory[it.type]||0)+1; updateInventoryUI(); pickupCooldown=0.2; } }
+function nearestPickup(px,py,pz){ let best=null,bestD=1e9; for(const items of itemsMap.values()){ for(const it of items){ if(it.taken) continue;
+  const dx=it.x-px, dy=(it.y+0.3)-py, dz=it.z-pz, d2=dx*dx+dy*dy+dz*dz; if(d2<bestD){ bestD=d2; best=it; } } } return best?{item:best,dist:Math.sqrt(bestD)}:null; }
+function updatePlayer(dt){
+  if(!controls.isLocked) return;
+  const forward=new THREE.Vector3(), right=new THREE.Vector3(); camera.getWorldDirection(forward); forward.y=0; forward.normalize();
+  right.crossVectors(forward,new THREE.Vector3(0,1,0)).multiplyScalar(-1).normalize();
+  const headY=camera.position.y; inWater=headY<(WATER_SURFACE+0.05);
+  const p=camera.position, groundY=heightAt(p.x,p.z)+PLAYER_HEIGHT;
+  const acc=new THREE.Vector3(); if(keys.has('KeyW')) acc.add(forward); if(keys.has('KeyS')) acc.add(forward.clone().multiplyScalar(-1));
+  if(keys.has('KeyA')) acc.add(right.clone().multiplyScalar(-1)); if(keys.has('KeyD')) acc.add(right);
+  if(!inWater){
+    if(acc.lengthSq()>0) acc.normalize().multiplyScalar(MOVE_ACCEL);
+    vel.x+=acc.x*dt; vel.z+=acc.z*dt; vel.x-=vel.x*MOVE_DAMP*dt; vel.z-=vel.z*MOVE_DAMP*dt; vel.y-=GRAVITY*dt;
+    if(keys.has('Space') && canJump){ vel.y=JUMP_VEL; canJump=false; }
+    p.x+=vel.x*dt; p.z+=vel.z*dt; p.y+=vel.y*dt;
+    if(p.y<groundY){ p.y=groundY; vel.y=0; canJump=true; }
+  }else{
+    const swimBoost=(keys.has('ShiftLeft')||keys.has('ShiftRight'))?1.25:1.0;
+    if(acc.lengthSq()>0) acc.normalize().multiplyScalar(SWIM_ACCEL*swimBoost);
+    vel.x+=acc.x*dt; vel.z+=acc.z*dt; vel.x-=vel.x*SWIM_DAMP*dt*0.6; vel.z-=vel.z*SWIM_DAMP*dt*0.6;
+    const toSurface=(WATER_SURFACE+0.02)-headY; const buoy=THREE.MathUtils.clamp(toSurface*SWIM_SURFACE_STICK,-1.5,1.5);
+    vel.y+=(SWIM_BUOYANCY*0.5*dt)+buoy*dt; vel.y-=SWIM_GRAVITY*dt;
+    if(keys.has('Space')) vel.y+=SWIM_ASCEND*dt; if(keys.has('ControlLeft')||keys.has('ControlRight')) vel.y-=SWIM_DESCEND*dt;
+    p.x+=vel.x*dt; p.z+=vel.z*dt; p.y+=vel.y*dt;
+    if(p.y<groundY){ p.y=groundY; if(vel.y<0) vel.y=0; }
+    if(p.y>WATER_SURFACE+PLAYER_HEIGHT*0.98 && vel.y>0) vel.y*=0.6;
+  }
+  if(inWater!==wasInWater){ if(inWater){ scene.fog.density*=1.25; uwOverlay.style.opacity=0.18; }else{ scene.fog.density*=0.8; uwOverlay.style.opacity=0.0; canJump=false; } wasInWater=inWater; }
+}
+
+/* ===== day/night + fog (10-minute cycle) ===== */
+const clock=new THREE.Clock(); let timeOfDay=8.0, chunkTimer=0;
+function updateDayNight(dt){
+  const HOURS_PER_SEC = 24 / (DAY_MINUTES * 60);
+  timeOfDay = (timeOfDay + dt * HOURS_PER_SEC) % 24;
+  const t=(timeOfDay/24)*Math.PI*2, elev=Math.sin(t), azim=Math.cos(t);
+  sun.position.set(azim*200, Math.max(10, elev*220+120), elev*120);
+  sun.intensity=clamp(0.1+Math.max(0,elev)*0.9,0.1,1.2);
+  ambient.intensity=0.20+Math.max(0,elev)*0.25;
+  const dayCol=new THREE.Color(0x88c6ff), duskCol=new THREE.Color(0xf5b080), nightCol=new THREE.Color(0x0b1020);
+  let sky=dayCol.clone(); const isDay=elev>0.02;
+  if(elev<0.1) sky.lerp(nightCol, clamp((0.1-elev)/0.6,0,1)); else if(elev<0.3) sky.lerp(duskCol, clamp((0.3-elev)/0.2,0,1));
+  scene.background.copy(sky); scene.fog.color.copy(sky);
+  water.material.uniforms.sunDirection.value.copy(sun.position).normalize();
+  let target=BASE_FOG; const twilight=clamp(0.25-Math.max(0,elev),0,0.25)/0.25; target+=twilight*0.0007; scene.fog.density=lerp(scene.fog.density,target,0.05);
+  updateButterflies(dt,isDay);
+}
+
+/* ===== build chunks (weighted biome blending) ===== */
 function buildChunk(cx,cz){
   const x0=cx*CHUNK_SIZE, z0=cz*CHUNK_SIZE;
   const geo=new THREE.PlaneGeometry(CHUNK_SIZE,CHUNK_SIZE,CHUNK_RES,CHUNK_RES); geo.rotateX(-Math.PI/2);
   const pos=geo.attributes.position;
-
-  const vcount = (CHUNK_RES+1)*(CHUNK_RES+1);
-  const colors = new Float32Array(vcount*3);
-  const biomeWeights = new Float32Array(vcount*4); // [grass, sand, snow, taiga]
+  const vcount=(CHUNK_RES+1)*(CHUNK_RES+1);
+  const colors=new Float32Array(vcount*3);
+  const biomeWeights=new Float32Array(vcount*4); // [grass, sand, snow, taiga]
 
   for(let i=0;i<pos.count;i++){
-    const vx=pos.getX(i)+x0, vz=pos.getZ(i)+z0;
-    const y=heightAt(vx,vz); pos.setY(i,y);
+    const vx=pos.getX(i)+x0, vz=pos.getZ(i)+z0, y=heightAt(vx,vz); pos.setY(i,y);
+    const {T,M}=climateAt(vx,y,vz);
 
-    // soft memberships
-    const {T,M} = climateAt(vx,y,vz); // 0..1
-
-    // sand near shore or hot+dry
     const sandByShore = 1.0 - THREE.MathUtils.smoothstep(y, SEA_LEVEL + 0.0, SEA_LEVEL + 1.2);
     const sandByClimate = THREE.MathUtils.smoothstep(T, 0.62, 0.85) * (1.0 - THREE.MathUtils.smoothstep(M, 0.35, 0.55));
-    let wSand = Math.max(sandByShore, sandByClimate);
+    let wSand=Math.max(sandByShore, sandByClimate);
 
-    // snow at altitude or very cold
-    const snowByAlt    = THREE.MathUtils.smoothstep(y, 18.0, 24.0);
-    const snowByCold   = 1.0 - THREE.MathUtils.smoothstep(T, 0.25, 0.40);
-    let wSnow = snowByAlt * (0.6 + 0.4 * snowByCold) + 0.4 * (1.0 - THREE.MathUtils.smoothstep(T, 0.18, 0.28));
+    const snowByAlt=THREE.MathUtils.smoothstep(y,18.0,24.0);
+    const snowByCold=1.0-THREE.MathUtils.smoothstep(T,0.25,0.40);
+    let wSnow=snowByAlt*(0.6+0.4*snowByCold)+0.4*(1.0-THREE.MathUtils.smoothstep(T,0.18,0.28));
 
-    // taiga cool+wet
-    let wTaiga = (1.0 - THREE.MathUtils.smoothstep(T, 0.28, 0.42)) * THREE.MathUtils.smoothstep(M, 0.55, 0.75);
+    let wTaiga=(1.0-THREE.MathUtils.smoothstep(T,0.28,0.42))*THREE.MathUtils.smoothstep(M,0.55,0.75);
+    let wGrass=THREE.MathUtils.smoothstep(M,0.35,0.80)*THREE.MathUtils.smoothstep(T,0.35,0.80);
 
-    // grass warm/moderate
-    let wGrass = THREE.MathUtils.smoothstep(M, 0.35, 0.80) * THREE.MathUtils.smoothstep(T, 0.35, 0.80);
+    if(y<SEA_LEVEL-0.5) wSand*=0.2;
+    let sum=wGrass+wSand+wSnow+wTaiga+1e-6; wGrass/=sum; wSand/=sum; wSnow/=sum; wTaiga/=sum;
 
-    if (y < SEA_LEVEL - 0.5) wSand *= 0.2;
-
-    // normalize
-    let sum = wGrass + wSand + wSnow + wTaiga + 1e-6;
-    wGrass/=sum; wSand/=sum; wSnow/=sum; wTaiga/=sum;
-
-    biomeWeights[i*4+0]=wGrass;
-    biomeWeights[i*4+1]=wSand;
-    biomeWeights[i*4+2]=wSnow;
-    biomeWeights[i*4+3]=wTaiga;
+    biomeWeights[i*4+0]=wGrass; biomeWeights[i*4+1]=wSand; biomeWeights[i*4+2]=wSnow; biomeWeights[i*4+3]=wTaiga;
 
     const b=biomeAt(vx,y,vz), col=TINT[b]||new THREE.Color(.8,.8,.8);
     colors[i*3+0]=col.r; colors[i*3+1]=col.g; colors[i*3+2]=col.b;
   }
-
   geo.setAttribute('color', new THREE.BufferAttribute(colors,3));
   geo.setAttribute('biomeWeights', new THREE.BufferAttribute(biomeWeights,4));
   geo.computeVertexNormals();
@@ -481,11 +442,10 @@ function buildChunk(cx,cz){
   chunkMap.set(keyFor(cx,cz), mesh);
 
   spawnItemsInChunk(x0,z0);
-  const decos = scatterDecorationsInChunk(x0,z0);
+  const decos=scatterDecorationsInChunk(x0,z0);
   decoMap.set(keyFor(cx,cz), decos);
   return mesh;
 }
-
 function ensureChunksAround(px,pz){
   const ccx=Math.floor(px/CHUNK_SIZE), ccz=Math.floor(pz/CHUNK_SIZE);
   const wanted=new Set();
@@ -499,307 +459,110 @@ function ensureChunksAround(px,pz){
   }
 }
 
-/* ===== pickups & inventory ===== */
-const inventory = { stick:0, rock:0, berry:0 };
-const c_stick=document.getElementById('c_stick'), c_rock=document.getElementById('c_rock'), c_berry=document.getElementById('c_berry');
-function updateInventoryUI(){ c_stick.textContent=inventory.stick; c_rock.textContent=inventory.rock; c_berry.textContent=inventory.berry; }
-const itemsMap = new Map();
-function removeItemsInChunkKey(k){
-  const arr = itemsMap.get(k);
-  if (arr) { for (const it of arr){ scene.remove(it.mesh); it.mesh.geometry?.dispose?.(); it.mesh.material?.dispose?.(); } itemsMap.delete(k); }
-  const dec = decoMap.get(k);
-  if (dec) { for (const d of dec){ scene.remove(d); d.traverse?.(o=>{o.geometry?.dispose?.(); o.material?.dispose?.();}); d.geometry?.dispose?.(); d.material?.dispose?.(); } decoMap.delete(k); }
-}
-function randInChunk(x0, z0){
-  return [ x0 + (Math.random()*2-1)*(CHUNK_SIZE*0.5-4),
-           z0 + (Math.random()*2-1)*(CHUNK_SIZE*0.5-4) ];
-}
-function makePickupMesh(type){
-  if (type==='rock'){
-    return new THREE.Mesh(new THREE.IcosahedronGeometry(0.3,0),
-      new THREE.MeshStandardMaterial({ color:0x888888, roughness:1 }));
-  }
-  if (type==='stick'){
-    const g=new THREE.CylinderGeometry(0.06,0.06,0.9,6);
-    const m=new THREE.MeshStandardMaterial({ color:0x6b4e2e, roughness:0.9 });
-    const mesh=new THREE.Mesh(g,m); mesh.rotation.z=(Math.random()*0.6-0.3); mesh.rotation.y=Math.random()*Math.PI; return mesh;
-  }
-  const group=new THREE.Group();
-  const base=new THREE.SphereGeometry(0.45,12,8,0,Math.PI*2,0,Math.PI/2);
-  const bm=new THREE.MeshStandardMaterial({ color:0x2f6f2f, roughness:1.0 });
-  const bush=new THREE.Mesh(base,bm); group.add(bush);
-  for (let i=0;i<5;i++){
-    const s=new THREE.Mesh(new THREE.SphereGeometry(0.08,10,8), new THREE.MeshStandardMaterial({ color:0xa11c3f, roughness:.7 }));
-    s.position.set((Math.random()-0.5)*0.6, 0.2+Math.random()*0.2, (Math.random()-0.5)*0.6);
-    group.add(s);
-  }
-  group.userData.isGroup = true;
-  return group;
-}
-function spawnItemsInChunk(x0, z0){
-  const cx=Math.round(x0/CHUNK_SIZE), cz=Math.round(z0/CHUNK_SIZE);
-  const key = keyFor(cx,cz);
-  const arr=[]; const n=Math.max(6, Math.floor(ITEM_PER_CHUNK*(Math.random()*0.6+0.7)));
-  for (let i=0;i<n;i++){
-    const type = Math.random()<0.38?'stick': (Math.random()<0.55?'rock':'berry');
-    const [x,z]=randInChunk(x0, z0); const y=heightAt(x,z);
-    if (y < SEA_LEVEL+0.2) continue;
-    const mesh=makePickupMesh(type); mesh.position.set(x, y+(type==='berry'?0.02:0.05), z); scene.add(mesh);
-    arr.push({ type, mesh, x, y, z, taken:false });
-  }
-  itemsMap.set(key, arr);
-}
-
-/* ===== campfires ===== */
-const campfires=[];
-function buildCampfireAt(x,z){
-  const g=new THREE.CylinderGeometry(0.18,0.18,0.5,6);
-  const m=new THREE.MeshStandardMaterial({ color:0x5a3d27, roughness:0.95 });
-  const log1=new THREE.Mesh(g,m), log2=log1.clone(), log3=log1.clone();
-  const y = heightAt(x,z) + 0.25;
-  log1.position.set(x,y,z); log2.position.set(x,y,z); log3.position.set(x,y,z);
-  log1.rotation.z=0.4; log2.rotation.z=-0.4; log3.rotation.x=0.6;
-  scene.add(log1,log2,log3);
-  const flame=new THREE.Mesh(new THREE.SphereGeometry(0.22,16,12), new THREE.MeshBasicMaterial({ color:0xffb74d }));
-  flame.position.set(x,y+0.1,z); scene.add(flame);
-  const glow=new THREE.PointLight(0xffa040,1.6,15,1.5); glow.position.set(x,y+0.3,z); scene.add(glow);
-  const baseI=glow.intensity; campfires.push({ glow, flame, t: Math.random()*100, baseI });
-}
-function updateCampfires(dt){
-  for (const c of campfires){
-    c.t += dt*8;
-    c.glow.intensity = c.baseI * (0.75 + Math.sin(c.t)*0.25 + Math.random()*0.08);
-    c.flame.scale.setScalar(0.8 + Math.random()*0.2);
-  }
-}
-
-/* ===== decorations scatter ===== */
-function scatterDecorationsInChunk(x0,z0){
-  const decos=[];
-  const place=(group,x,z)=>{
-    const y=heightAt(x,z);
-    if(y < SEA_LEVEL + 0.05) return;
-    group.position.set(x,y,z); scene.add(group); decos.push(group);
-  };
-  for(let i=0;i<TREES_PER_CHUNK;i++){
-    const x=x0+(Math.random()*2-1)*(CHUNK_SIZE*0.5-6);
-    const z=z0+(Math.random()*2-1)*(CHUNK_SIZE*0.5-6);
-    const y=heightAt(x,z); const b=biomeAt(x,y,z);
-    if(b==='forest'){ place(makeOak(1.0+Math.random()*0.4), x, z); if(Math.random()<0.12) spawnButterfly(x,y+1.6,z); }
-    else if(b==='taiga'){ place(makePine(1.0+Math.random()*0.5), x, z); }
-    else if(b==='meadow' && Math.random()<0.35){ place(makeOak(0.8+Math.random()*0.3), x, z); if(Math.random()<0.2) spawnButterfly(x,y+1.4,z); }
-  }
-  for(let i=0;i<FLOWERS_PER_CHUNK;i++){
-    const x=x0+(Math.random()*2-1)*(CHUNK_SIZE*0.5-4);
-    const z=z0+(Math.random()*2-1)*(CHUNK_SIZE*0.5-4);
-    const y=heightAt(x,z); const b=biomeAt(x,y,z);
-    if(b==='meadow' || b==='shrubland' || b==='forest'){ place(makeFlower(), x, z); }
-  }
-  for(let i=0;i<CACTI_PER_CHUNK;i++){
-    const x=x0+(Math.random()*2-1)*(CHUNK_SIZE*0.5-6);
-    const z=z0+(Math.random()*2-1)*(CHUNK_SIZE*0.5-6);
-    const y=heightAt(x,z); const b=biomeAt(x,y,z);
-    if(b==='desert'){ place(makeCactus(0.9+Math.random()*0.5), x, z); }
-  }
-  for(let i=0;i<STONES_PER_CHUNK;i++){
-    const x=x0+(Math.random()*2-1)*(CHUNK_SIZE*0.5-6);
-    const z=z0+(Math.random()*2-1)*(CHUNK_SIZE*0.5-6);
-    const y=heightAt(x,z); const b=biomeAt(x,y,z);
-    if(b==='alpine' || b==='tundra'){ place(makeStonePile(), x, z); }
-  }
-  for(let i=0;i<REEDS_PER_CHUNK;i++){
-    const x=x0+(Math.random()*2-1)*(CHUNK_SIZE*0.5-6);
-    const z=z0+(Math.random()*2-1)*(CHUNK_SIZE*0.5-6);
-    const y=heightAt(x,z);
-    if(y > SEA_LEVEL - 0.15 && y < SEA_LEVEL + 0.35){
-      const reed=makeReed(); reed.position.set(x,y,z); scene.add(reed); decos.push(reed);
-    }
-  }
-  for(let i=0;i<LILIES_PER_CHUNK;i++){
-    const x=x0+(Math.random()*2-1)*(CHUNK_SIZE*0.5-6);
-    const z=z0+(Math.random()*2-1)*(CHUNK_SIZE*0.5-6);
-    const y=heightAt(x,z);
-    if(y < SEA_LEVEL - 0.02 && y > SEA_LEVEL - 0.5){
-      const lily=makeLily(); lily.position.set(x, SEA_LEVEL-0.06, z); scene.add(lily); decos.push(lily);
-    }
-  }
-  return decos;
-}
-
-/* ===== input + movement + swimming ===== */
-const keys=new Set();
-addEventListener('keydown',e=>{ if(e.code==='Space') e.preventDefault(); keys.add(e.code); });
-addEventListener('keyup',e=>keys.delete(e.code));
-const vel=new THREE.Vector3(); let canJump=false;
-let pickupCooldown = 0;
-
-const invPanel = document.getElementById('inventory'); let inventoryOpen=false;
-addEventListener('keydown', (e)=>{
-  if (e.code === 'KeyI'){ inventoryOpen = !inventoryOpen; invPanel.style.display = inventoryOpen? 'block' : 'none'; }
-  if (!controls.isLocked) return;
-  if (e.code==='KeyE'){ tryPickup(); }
-  if (e.code==='KeyB'){
-    if (inventory.stick >= 3 && inventory.rock >= 1){
-      inventory.stick -= 3; inventory.rock -= 1; updateInventoryUI();
-      buildCampfireAt(camera.position.x, camera.position.z);
-    }
-  }
-});
-
-const interact = document.getElementById('interact');
-function showInteract(msg){ interact.textContent = msg; interact.style.opacity = 1; }
-function hideInteract(){ interact.style.opacity = 0; }
-
-let inWater=false, wasInWater=false;
-const uwOverlay = document.getElementById('underwater');
-
-function tryPickup(){
-  if (pickupCooldown > 0) return;
-  const n = nearestPickup(camera.position.x, camera.position.y, camera.position.z);
-  if (n && n.dist <= PICKUP_DISTANCE){
-    const it = n.item; it.taken = true; scene.remove(it.mesh);
-    inventory[it.type] = (inventory[it.type]||0) + 1; updateInventoryUI();
-    pickupCooldown = 0.2;
-  }
-}
-function nearestPickup(px,py,pz){
-  let best=null, bestD=1e9;
-  for (const items of itemsMap.values()){
-    for (const it of items){
-      if (it.taken) continue;
-      const dx = it.x - px, dy = (it.y+0.3) - py, dz = it.z - pz;
-      const d2 = dx*dx + dy*dy + dz*dz;
-      if (d2 < bestD){ bestD = d2; best = it; }
-    }
-  }
-  return best ? { item:best, dist: Math.sqrt(bestD) } : null;
-}
-
-function updatePlayer(dt){
-  if(!controls.isLocked) return;
-
-  const forward=new THREE.Vector3(), right=new THREE.Vector3();
-  camera.getWorldDirection(forward); forward.y=0; forward.normalize();
-  right.crossVectors(forward,new THREE.Vector3(0,1,0)).multiplyScalar(-1).normalize();
-
-  const headY = camera.position.y;
-  inWater = headY < (WATER_SURFACE + 0.05);
-
-  const p=camera.position;
-  const groundY = heightAt(p.x,p.z) + PLAYER_HEIGHT;
-
-  const acc=new THREE.Vector3();
-  if(keys.has('KeyW')) acc.add(forward);
-  if(keys.has('KeyS')) acc.add(forward.clone().multiplyScalar(-1));
-  if(keys.has('KeyA')) acc.add(right.clone().multiplyScalar(-1));
-  if(keys.has('KeyD')) acc.add(right);
-
-  if(!inWater){
-    if(acc.lengthSq()>0) acc.normalize().multiplyScalar(MOVE_ACCEL);
-    vel.x += acc.x*dt; vel.z += acc.z*dt;
-
-    vel.x -= vel.x*MOVE_DAMP*dt; vel.z -= vel.z*MOVE_DAMP*dt;
-    vel.y -= GRAVITY*dt;
-
-    if(keys.has('Space') && canJump){ vel.y = JUMP_VEL; canJump=false; }
-
-    p.x += vel.x*dt; p.z += vel.z*dt; p.y += vel.y*dt;
-
-    if(p.y < groundY){ p.y=groundY; vel.y=0; canJump=true; }
-  } else {
-    const swimBoost = (keys.has('ShiftLeft') || keys.has('ShiftRight')) ? 1.25 : 1.0;
-    if(acc.lengthSq()>0) acc.normalize().multiplyScalar(SWIM_ACCEL * swimBoost);
-    vel.x += acc.x*dt; vel.z += acc.z*dt;
-
-    vel.x -= vel.x*SWIM_DAMP*dt*0.6;
-    vel.z -= vel.z*SWIM_DAMP*dt*0.6;
-
-    const toSurface = (WATER_SURFACE + 0.02) - headY;
-    const buoy = THREE.MathUtils.clamp(toSurface * SWIM_SURFACE_STICK, -1.5, 1.5);
-    vel.y += (SWIM_BUOYANCY*0.5*dt) + buoy*dt;
-    vel.y -= SWIM_GRAVITY*dt;
-
-    if(keys.has('Space')) vel.y += SWIM_ASCEND*dt;
-    if(keys.has('ControlLeft') || keys.has('ControlRight')) vel.y -= SWIM_DESCEND*dt;
-
-    p.x += vel.x*dt; p.z += vel.z*dt; p.y += vel.y*dt;
-
-    if(p.y < groundY){ p.y=groundY; if(vel.y<0) vel.y=0; }
-    if(p.y > WATER_SURFACE + PLAYER_HEIGHT*0.98 && vel.y > 0) vel.y *= 0.6;
-  }
-
-  if(inWater !== wasInWater){
-    if(inWater){ scene.fog.density *= 1.25; uwOverlay.style.opacity = 0.18; }
-    else{ scene.fog.density *= 0.8; uwOverlay.style.opacity = 0.0; canJump = false; }
-    wasInWater = inWater;
-  }
-}
-
-/* ===== Biome HUD ===== */
-const biomeHUD = document.getElementById('biomeHUD');
-function updateBiomeHUD(){
-  const x = Math.round(camera.position.x), z = Math.round(camera.position.z);
-  const y = heightAt(x, z);
-  const b = biomeAt(x, y, z);
-  biomeHUD.textContent = `biome: ${b} | x: ${x} z: ${z}`;
-}
-
-/* ===== day/night + fog (10-minute cycle) ===== */
-const clock=new THREE.Clock(); let timeOfDay=8.0, chunkTimer=0;
-function updateDayNight(dt){
-  const HOURS_PER_SEC = 24 / (DAY_MINUTES * 60);
-  timeOfDay = (timeOfDay + dt * HOURS_PER_SEC) % 24;
-
-  const t=(timeOfDay/24)*Math.PI*2;
-  const elev=Math.sin(t), azim=Math.cos(t);
-  sun.position.set(azim*200, Math.max(10, elev*220+120), elev*120);
-  sun.intensity = clamp(0.1 + Math.max(0,elev)*0.9, 0.1, 1.2);
-  ambient.intensity = 0.20 + Math.max(0,elev)*0.25;
-
-  const dayCol=new THREE.Color(0x88c6ff), duskCol=new THREE.Color(0xf5b080), nightCol=new THREE.Color(0x0b1020);
-  let sky=dayCol.clone();
-  const isDay = elev > 0.02;
-  if(elev<0.1){ sky.lerp(nightCol, clamp((0.1-elev)/0.6,0,1)); }
-  else if(elev<0.3){ sky.lerp(duskCol, clamp((0.3-elev)/0.2,0,1)); }
-  scene.background.copy(sky); scene.fog.color.copy(sky);
-
-  water.material.uniforms.sunDirection.value.copy(sun.position).normalize();
-
-  let target = BASE_FOG;
-  const twilight = clamp(0.25 - Math.max(0,elev), 0, 0.25) / 0.25;
-  target += twilight * 0.0007;
-  scene.fog.density = lerp(scene.fog.density, target, 0.05);
-
-  updateButterflies(dt, isDay);
-}
-
 /* ===== main loop ===== */
 function animate(){
-  const dt=Math.min(clock.getDelta(), 0.05);
-  chunkTimer -= dt; if(chunkTimer<=0){ ensureChunksAround(camera.position.x, camera.position.z); chunkTimer=0.25; }
+  const dt=Math.min(clock.getDelta(),0.05);
+  chunkTimer-=dt; if(chunkTimer<=0){ ensureChunksAround(camera.position.x,camera.position.z); chunkTimer=0.25; }
   updateDayNight(dt);
   updatePlayer(dt);
   updateCampfires(dt);
-  if (pickupCooldown>0) pickupCooldown -= dt;
+  if(pickupCooldown>0) pickupCooldown-=dt;
   updateBiomeHUD();
 
-  const n = nearestPickup(camera.position.x, camera.position.y, camera.position.z);
-  if (controls.isLocked && n && n.dist <= PICKUP_DISTANCE){
-    const name = n.item.type.charAt(0).toUpperCase()+n.item.type.slice(1);
-    showInteract(`E — Pick up ${name}`);
-  } else hideInteract();
+  const n=nearestPickup(camera.position.x,camera.position.y,camera.position.z);
+  if(controls.isLocked && n && n.dist<=PICKUP_DISTANCE){ const name=n.item.type.charAt(0).toUpperCase()+n.item.type.slice(1); showInteract(`E — Pick up ${name}`); }
+  else hideInteract();
 
-  renderer.render(scene, camera);
+  renderer.render(scene,camera);
   requestAnimationFrame(animate);
 }
 updateInventoryUI();
-ensureChunksAround(camera.position.x, camera.position.z);
-updateBiomeHUD();
-animate();
+
+/* ===== async: preload textures, then build terrain & start ===== */
+async function initWorldAfterTextures(){
+  const [g,s,n] = await Promise.all([
+    loader.loadAsync(GRASS_URL),
+    loader.loadAsync(SAND_URL),
+    loader.loadAsync(SNOW_URL)
+  ]);
+  grassTex=tuneTex(g); sandTex=tuneTex(s); snowTex=tuneTex(n);
+  dirtTex=makeDirtTexture(); rockTex=makeRockTexture();
+
+  const TEX_METERS=4;
+  terrainMat=new THREE.MeshStandardMaterial({ vertexColors:true, flatShading:true, metalness:0, roughness:.95, map:grassTex });
+  terrainMat.onBeforeCompile=(shader)=>{
+    shader.uniforms.grassMap={value:grassTex};
+    shader.uniforms.dirtMap={value:dirtTex};
+    shader.uniforms.rockMap={value:rockTex};
+    shader.uniforms.sandMap={value:sandTex};
+    shader.uniforms.snowMap={value:snowTex};
+    shader.uniforms.tileScale={value:1.0/TEX_METERS};
+    shader.uniforms.slopeStart={value:.35};
+    shader.uniforms.slopeEnd={value:.80};
+    shader.uniforms.triSharp={value:4.0};
+
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', `#include <common>
+        attribute vec4 biomeWeights; varying vec4 vBiomeW; varying vec3 vWorldPos; varying vec3 vWorldNormal;
+      `)
+      .replace('#include <beginnormal_vertex>', `
+        #include <beginnormal_vertex>
+        vWorldNormal = normalize( mat3(modelMatrix) * objectNormal );
+      `)
+      .replace('#include <begin_vertex>', `
+        #include <begin_vertex>
+        vWorldPos = (modelMatrix * vec4(transformed,1.0)).xyz;
+        vBiomeW = biomeWeights;
+      `);
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', `#include <common>
+        varying vec4 vBiomeW; varying vec3 vWorldPos; varying vec3 vWorldNormal;
+        uniform sampler2D grassMap,dirtMap,rockMap,sandMap,snowMap;
+        uniform float tileScale,slopeStart,slopeEnd,triSharp;
+        vec3 srgbToLinear(vec3 c){ return pow(c, vec3(2.2)); }
+        vec3 triSample(sampler2D tex, vec3 aw, vec3 wp){
+          vec2 uvX=wp.zy*tileScale, uvY=wp.xz*tileScale, uvZ=wp.xy*tileScale;
+          vec3 tx=texture2D(tex,uvX).rgb, ty=texture2D(tex,uvY).rgb, tz=texture2D(tex,uvZ).rgb;
+          return srgbToLinear(tx*aw.x + ty*aw.y + tz*aw.z);
+        }
+      `)
+      .replace('#include <map_fragment>', `
+        vec3 n = normalize(vWorldNormal);
+        vec3 aw = pow(abs(n), vec3(triSharp)); aw /= (aw.x+aw.y+aw.z+1e-5);
+
+        vec3 texGrass = triSample(grassMap, aw, vWorldPos);
+        vec3 texDirt  = triSample(dirtMap,  aw, vWorldPos);
+        vec3 texRock  = triSample(rockMap,  aw, vWorldPos);
+        vec3 texSand  = triSample(sandMap,  aw, vWorldPos);
+        vec3 texSnow  = triSample(snowMap,  aw, vWorldPos);
+
+        vec4 w = vBiomeW / (dot(vBiomeW, vec4(1.0)) + 1e-5);
+        vec3 texTaiga = mix(texDirt, texGrass, 0.35) * vec3(0.92,0.95,0.92);
+        vec3 baseBiome = texGrass*w.x + texSand*w.y + texSnow*w.z + texTaiga*w.w;
+
+        float slope = clamp(1.0 - abs(n.y), 0.0, 1.0);
+        float wRock = smoothstep(slopeEnd*.9, slopeEnd, slope);
+        float wMid  = smoothstep(slopeStart*.6, slopeEnd*.9, slope) * (1.0 - wRock);
+        float wFlat = 1.0 - (wMid + wRock);
+
+        vec3 layered = baseBiome*wFlat + mix(baseBiome, texDirt, 0.55)*wMid + texRock*wRock;
+        diffuseColor.rgb = layered;
+      `);
+  };
+  terrainMat.needsUpdate=true;
+
+  ensureChunksAround(camera.position.x, camera.position.z);
+  updateBiomeHUD();
+  animate();
+}
+
+/* start once user clicks + textures load */
+updateInventoryUI();
+initWorldAfterTextures();
 
 /* ===== resize ===== */
 addEventListener('resize',()=>{ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth,innerHeight); });
 </script>
 </body>
 </html>
-
